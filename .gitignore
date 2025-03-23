@@ -1,0 +1,19 @@
+# Environment variables
+.env
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+
+# Local data
+chunks/
+raw/
+processed/
+embeddings/
+
+# Usage tracking
+api_usage.json
