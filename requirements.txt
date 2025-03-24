@@ -6,7 +6,7 @@ langchain-pinecone>=0.1.1,<0.3.0
 pinecone-client==2.2.4
 tiktoken==0.5.2
 python-dotenv==1.0.0
-openai==1.6.1
+openai>=1.10.0,<2.0.0
 tqdm==4.66.1
 python-multipart==0.0.6
 gunicorn==21.2.0
