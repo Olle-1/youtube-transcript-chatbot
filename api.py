@@ -11,6 +11,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
+from fastapi import FastAPI, HTTPException, Depends, status, Cookie
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+import secrets
+import time
+from datetime import datetime, timedelta
+
 # Import from our chatbot implementation
 # This assumes final-integration.py is saved as youtube_chatbot.py
 from chatbot import YouTubeTranscriptChatbot
@@ -67,6 +76,70 @@ class UsageReportResponse(BaseModel):
     daily_budget: float
     remaining_budget: float
 
+# Simple user model for authentication
+class User(BaseModel):
+    username: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    disabled: Optional[bool] = None
+
+# Simple in-memory user database
+fake_users_db = {
+    "testuser": {
+        "username": "testuser",
+        "email": "test@example.com",
+        "full_name": "Test User",
+        "hashed_password": "fakehashednewpass123",
+        "disabled": False,
+    }
+}
+
+# Simple authentication
+def fake_hash_password(password: str):
+    return "fakehashed" + password
+
+# Very simple token database - in memory (not persistent)
+active_tokens = {}
+
+# Function to get user based on username
+def get_user(db, username: str):
+    if username in db:
+        user_dict = db[username]
+        return User(**user_dict)
+
+# OAuth2 password bearer scheme
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+
+# Function to get current user from token
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    if token not in active_tokens:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token_data = active_tokens[token]
+    
+    # Check if token has expired
+    if token_data["expires"] < time.time():
+        del active_tokens[token]
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    user = get_user(fake_users_db, token_data["user"])
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    return user
+
 # Simple session store - would use a real database in production
 session_store = {}
 
@@ -110,6 +183,36 @@ async def root():
         "status": "online",
         "message": "YouTube Transcript Chatbot API is running"
     }
+
+# Login endpoint
+@app.post("/auth/token")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user_dict = fake_users_db.get(form_data.username)
+    if not user_dict:
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    
+    user = User(**user_dict)
+    
+    if user.disabled:
+        raise HTTPException(status_code=400, detail="Inactive user")
+    
+    hashed_password = fake_hash_password(form_data.password)
+    if not hashed_password == user_dict["hashed_password"]:
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    
+    # Generate a token
+    token = secrets.token_hex(16)
+    active_tokens[token] = {
+        "user": user.username,
+        "expires": time.time() + 86400  # 24 hours from now
+    }
+    
+    return {"access_token": token, "token_type": "bearer"}
+
+# Protected endpoint example
+@app.get("/users/me")
+async def read_users_me(current_user: User = Depends(get_current_user)):
+    return current_user
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
