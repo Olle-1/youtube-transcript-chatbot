@@ -59,15 +59,29 @@ def get_chatbot(creator_id: str = "mountaindog1"):
 # NEW: HTML routes
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
+    # Explicitly pass the request parameter
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.get("/chat", response_class=HTMLResponse)
 async def read_chat(request: Request):
+    # Explicitly pass the request parameter
     return templates.TemplateResponse("chat.html", {"request": request})
 
 @app.get("/login", response_class=HTMLResponse)
 async def read_login(request: Request):
+    # Explicitly pass the request parameter
     return templates.TemplateResponse("login.html", {"request": request})
+
+@app.get("/test", response_class=HTMLResponse)
+async def test_template(request: Request):
+    try:
+        return templates.TemplateResponse("index.html", {"request": request})
+    except Exception as e:
+        return HTMLResponse(f"Error rendering template: {str(e)}")
+
+@app.get("/simple", response_class=HTMLResponse)
+async def simple_html():
+    return HTMLResponse("<html><body><h1>Simple HTML Test</h1></body></html>")
 
 # CHANGED: Added /api prefix to all API endpoints
 @app.get("/api")
