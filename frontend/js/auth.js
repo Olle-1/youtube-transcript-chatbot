@@ -1,6 +1,6 @@
 // Base API URL - change this to your deployed API URL
 // IMPORTANT: Change this to your actual DigitalOcean app URL
-const API_URL = 'https://your-digitalocean-app-url.ondigitalocean.app';
+const API_URL = 'https://liftingchat.com';
 
 // Login form handling
 const loginForm = document.getElementById('login-form');

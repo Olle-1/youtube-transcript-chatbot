@@ -1,5 +1,5 @@
 // Base API URL - change this to your deployed API URL
-const API_URL = 'https://your-digitalocean-app-url.ondigitalocean.app';
+const API_URL = 'https://liftingchat.com';
 
 // DOM elements
 const messagesContainer = document.getElementById('messages');
