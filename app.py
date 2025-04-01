@@ -27,7 +27,7 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # NEW: Set up templates
-templates = Jinja2Templates(directory="frontend")
+templates = Jinja2Templates(directory="./frontend")
 
 # Enable CORS
 app.add_middleware(
@@ -140,6 +140,15 @@ async def chat_stream(request: ChatRequest):
 async def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
+
+@app.get("/debug")
+async def debug():
+    import os
+    files = os.listdir("./frontend")
+    return {
+        "current_directory": os.getcwd(),
+        "files_in_frontend": files
+    }
 
 # Future endpoints for multi-tenant:
 # - /creators (list available creators)
