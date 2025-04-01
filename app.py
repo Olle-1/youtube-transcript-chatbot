@@ -1,7 +1,9 @@
 import os
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse  # Added HTMLResponse
+from fastapi.staticfiles import StaticFiles  # Added this line
+from fastapi.templating import Jinja2Templates  # Added this line
 import json
 import asyncio
 from pydantic import BaseModel
@@ -20,6 +22,12 @@ app = FastAPI(
     description="Chat with your favorite creator's content",
     version="1.0.0"
 )
+
+# NEW: Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# NEW: Set up templates
+templates = Jinja2Templates(directory="frontend")
 
 # Enable CORS
 app.add_middleware(
@@ -48,11 +56,25 @@ def get_chatbot(creator_id: str = "mountaindog1"):
     # Future code will get configuration based on creator_id
     return chatbot_instance
 
-@app.get("/")
-async def root():
+# NEW: HTML routes
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+@app.get("/chat", response_class=HTMLResponse)
+async def read_chat(request: Request):
+    return templates.TemplateResponse("chat.html", {"request": request})
+
+@app.get("/login", response_class=HTMLResponse)
+async def read_login(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request})
+
+# CHANGED: Added /api prefix to all API endpoints
+@app.get("/api")
+async def api_root():
     return {"status": "online", "message": "YouTube Creator Chatbot API"}
 
-@app.post("/chat")
+@app.post("/api/chat")
 async def chat(request: ChatRequest):
     """Standard chat endpoint with full response"""
     chatbot = get_chatbot()  # Will use creator_id in the future
@@ -85,7 +107,7 @@ async def chat(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/chat/stream")
+@app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming chat endpoint for real-time responses"""
     chatbot = get_chatbot()  # Will use creator_id in the future
@@ -114,7 +136,7 @@ async def chat_stream(request: ChatRequest):
     
     return StreamingResponse(generate(), media_type="text/event-stream")
 
-@app.get("/health")
+@app.get("/api/health")
 async def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
