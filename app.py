@@ -1,11 +1,12 @@
 import os
-from fastapi import FastAPI, Request, Depends, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse  # Added HTMLResponse
-from fastapi.staticfiles import StaticFiles  # Added this line
-from fastapi.templating import Jinja2Templates  # Added this line
 import json
 import asyncio
+import re
+from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
@@ -23,12 +24,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# NEW: Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# NEW: Set up templates
-templates = Jinja2Templates(directory="./frontend")
-
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
@@ -37,6 +32,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Set up templates for frontend pages
+templates = Jinja2Templates(directory="frontend")
+
+# Mount static files directories
+app.mount("/css", StaticFiles(directory="frontend/css"), name="css")
+app.mount("/js", StaticFiles(directory="frontend/js"), name="js")
 
 # Request models
 class ChatRequest(BaseModel):
@@ -56,39 +58,30 @@ def get_chatbot(creator_id: str = "mountaindog1"):
     # Future code will get configuration based on creator_id
     return chatbot_instance
 
-# NEW: HTML routes
+# Frontend page routes
 @app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
-    # Explicitly pass the request parameter
+async def get_index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.get("/chat", response_class=HTMLResponse)
-async def read_chat(request: Request):
-    # Explicitly pass the request parameter
+async def get_chat(request: Request):
     return templates.TemplateResponse("chat.html", {"request": request})
 
 @app.get("/login", response_class=HTMLResponse)
-async def read_login(request: Request):
-    # Explicitly pass the request parameter
+async def get_login(request: Request):
     return templates.TemplateResponse("login.html", {"request": request})
 
-@app.get("/test", response_class=HTMLResponse)
-async def test_template(request: Request):
-    try:
-        return templates.TemplateResponse("index.html", {"request": request})
-    except Exception as e:
-        return HTMLResponse(f"Error rendering template: {str(e)}")
+@app.get("/signup", response_class=HTMLResponse)
+async def get_signup(request: Request):
+    # Add this route if you have a signup.html page
+    return templates.TemplateResponse("signup.html", {"request": request})
 
-@app.get("/simple", response_class=HTMLResponse)
-async def simple_html():
-    return HTMLResponse("<html><body><h1>Simple HTML Test</h1></body></html>")
-
-# CHANGED: Added /api prefix to all API endpoints
+# API endpoint - renamed to not conflict with frontend route
 @app.get("/api")
 async def api_root():
     return {"status": "online", "message": "YouTube Creator Chatbot API"}
 
-@app.post("/api/chat")
+@app.post("/chat")
 async def chat(request: ChatRequest):
     """Standard chat endpoint with full response"""
     chatbot = get_chatbot()  # Will use creator_id in the future
@@ -104,7 +97,6 @@ async def chat(request: ChatRequest):
             sources_text = response_parts[1].strip()
             
             # Parse markdown links
-            import re
             link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'
             matches = re.findall(link_pattern, sources_text)
             
@@ -121,7 +113,7 @@ async def chat(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/chat/stream")
+@app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming chat endpoint for real-time responses"""
     chatbot = get_chatbot()  # Will use creator_id in the future
@@ -150,19 +142,10 @@ async def chat_stream(request: ChatRequest):
     
     return StreamingResponse(generate(), media_type="text/event-stream")
 
-@app.get("/api/health")
+@app.get("/health")
 async def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
-
-@app.get("/debug")
-async def debug():
-    import os
-    files = os.listdir("./frontend")
-    return {
-        "current_directory": os.getcwd(),
-        "files_in_frontend": files
-    }
 
 # Future endpoints for multi-tenant:
 # - /creators (list available creators)
