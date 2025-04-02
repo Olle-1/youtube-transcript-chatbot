@@ -34,11 +34,11 @@ app.add_middleware(
 )
 
 # Set up templates for frontend pages
-templates = Jinja2Templates(directory="frontend")
+#templates = Jinja2Templates(directory="frontend")
 
 # Mount static files directories
-app.mount("/css", StaticFiles(directory="frontend/css"), name="css")
-app.mount("/js", StaticFiles(directory="frontend/js"), name="js")
+#app.mount("/css", StaticFiles(directory="frontend/css"), name="css")
+#app.mount("/js", StaticFiles(directory="frontend/js"), name="js")
 
 # Request models
 class ChatRequest(BaseModel):
@@ -59,22 +59,22 @@ def get_chatbot(creator_id: str = "mountaindog1"):
     return chatbot_instance
 
 # Frontend page routes
-@app.get("/", response_class=HTMLResponse)
-async def get_index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+#@app.get("/", response_class=HTMLResponse)
+#async def get_index(request: Request):
+#    return templates.TemplateResponse("index.html", {"request": request})
 
-@app.get("/chat", response_class=HTMLResponse)
-async def get_chat(request: Request):
-    return templates.TemplateResponse("chat.html", {"request": request})
+#@app.get("/chat", response_class=HTMLResponse)
+#async def get_chat(request: Request):
+#    return templates.TemplateResponse("chat.html", {"request": request})
 
-@app.get("/login", response_class=HTMLResponse)
-async def get_login(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+#@app.get("/login", response_class=HTMLResponse)
+#async def get_login(request: Request):
+#    return templates.TemplateResponse("login.html", {"request": request})
 
-@app.get("/signup", response_class=HTMLResponse)
-async def get_signup(request: Request):
+#@app.get("/signup", response_class=HTMLResponse)
+#async def get_signup(request: Request):
     # Add this route if you have a signup.html page
-    return templates.TemplateResponse("signup.html", {"request": request})
+#    return templates.TemplateResponse("signup.html", {"request": request})
 
 # API endpoint - renamed to not conflict with frontend route
 @app.get("/api")
@@ -141,6 +141,11 @@ async def chat_stream(request: ChatRequest):
             yield f"data: {json.dumps({'content': chunk})}\n\n"
     
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+@app.get("/")
+async def api_root():
+    return {"status": "online", "message": "YouTube Creator Chatbot API"}
+
 
 @app.get("/health")
 async def health_check():
