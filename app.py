@@ -23,14 +23,21 @@ app = FastAPI(
     description="Chat with your favorite creator's content",
     version="1.0.0"
 )
-
+allowed_origins = [
+    "https://velvety-lollipop-8fbc93.netlify.app",  # Your Netlify domain
+    "https://liftingchat.com",
+    "https://www.liftingchat.com",
+    "http://localhost:3000",  # For local development
+    "http://localhost:8000"   # For local development
+]
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "https://liftingchat.netlify.app", "https://velvety-lollipop-0fbc93.netlify.app/"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    max_age=86400,  # Cache preflight requests for 24 hours
 )
 
 # Set up templates for frontend pages
