@@ -5,14 +5,24 @@ import re
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
+import logging
 
 # Import chatbot (the complete Module 4 implementation)
 from chatbot import YouTubeTranscriptChatbot
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("app.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("AppAPI")
 
 # Load environment variables
 load_dotenv()
@@ -23,13 +33,17 @@ app = FastAPI(
     description="Chat with your favorite creator's content",
     version="1.0.0"
 )
+
+# Define allowed origins for CORS
 allowed_origins = [
     "https://velvety-lollipop-8fbc93.netlify.app",  # Your Netlify domain
     "https://liftingchat.com",
     "https://www.liftingchat.com",
     "http://localhost:3000",  # For local development
-    "http://localhost:8000"   # For local development
+    "http://localhost:8000",  # For local development
+    "*"  # Allow all origins during development - remove this in production
 ]
+
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
@@ -39,13 +53,6 @@ app.add_middleware(
     allow_headers=["*"],
     max_age=86400,  # Cache preflight requests for 24 hours
 )
-
-# Set up templates for frontend pages
-#templates = Jinja2Templates(directory="frontend")
-
-# Mount static files directories
-#app.mount("/css", StaticFiles(directory="frontend/css"), name="css")
-#app.mount("/js", StaticFiles(directory="frontend/js"), name="js")
 
 # Request models
 class ChatRequest(BaseModel):
@@ -65,36 +72,23 @@ def get_chatbot(creator_id: str = "mountaindog1"):
     # Future code will get configuration based on creator_id
     return chatbot_instance
 
-# Frontend page routes
-#@app.get("/", response_class=HTMLResponse)
-#async def get_index(request: Request):
-#    return templates.TemplateResponse("index.html", {"request": request})
-
-#@app.get("/chat", response_class=HTMLResponse)
-#async def get_chat(request: Request):
-#    return templates.TemplateResponse("chat.html", {"request": request})
-
-#@app.get("/login", response_class=HTMLResponse)
-#async def get_login(request: Request):
-#    return templates.TemplateResponse("login.html", {"request": request})
-
-#@app.get("/signup", response_class=HTMLResponse)
-#async def get_signup(request: Request):
-    # Add this route if you have a signup.html page
-#    return templates.TemplateResponse("signup.html", {"request": request})
-
-# API endpoint - renamed to not conflict with frontend route
-@app.get("/api")
+# API endpoint root
+@app.get("/")
 async def api_root():
-    return {"status": "online", "message": "YouTube Creator Chatbot API"}
+    return {"status": "online", "message": "YouTube Creator Chatbot API is running"}
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    """Standard chat endpoint with full response"""
+    """Standard chat endpoint with full response and timeout protection"""
     chatbot = get_chatbot()  # Will use creator_id in the future
+    logger.info(f"Received chat request with query: {request.query[:30]}...")
     
     try:
-        response = await chatbot.get_streaming_response(request.query)
+        # Use the timeout-protected version
+        response = await chatbot.get_streaming_response_with_timeout(
+            request.query, 
+            timeout_seconds=90  # 90 second timeout
+        )
         
         # Extract sources from response if present
         sources = []
@@ -112,47 +106,103 @@ async def chat(request: ChatRequest):
         else:
             main_response = response
         
+        logger.info(f"Successfully generated response for query: {request.query[:30]}...")
         return {
             "response": main_response,
             "sources": sources
         }
     
+    except asyncio.TimeoutError:
+        logger.warning(f"Request timed out for query: {request.query[:30]}...")
+        raise HTTPException(
+            status_code=504,
+            detail="Request timed out. Please try a simpler question."
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Better error handling
+        error_msg = str(e)
+        logger.error(f"Error in chat endpoint: {error_msg}")
+        
+        if "timeout" in error_msg.lower():
+            raise HTTPException(
+                status_code=504,
+                detail="Request timed out. Please try a simpler question."
+            )
+        else:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"An error occurred: {error_msg}"
+            )
 
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """Streaming chat endpoint for real-time responses"""
+    """Streaming chat endpoint for real-time responses with timeout protection"""
     chatbot = get_chatbot()  # Will use creator_id in the future
+    logger.info(f"Received streaming chat request with query: {request.query[:30]}...")
     
     async def generate():
         queue = asyncio.Queue()
+        completion_event = asyncio.Event()
+        timeout_event = asyncio.Event()
         
         def handle_chunk(chunk):
             queue.put_nowait(chunk)
         
-        async def process():
+        async def process_with_timeout():
             try:
-                await chatbot.get_streaming_response(request.query, handle_chunk)
+                # Use timeout
+                await asyncio.wait_for(
+                    chatbot.get_streaming_response(request.query, handle_chunk),
+                    timeout=90  # 90 second timeout
+                )
                 queue.put_nowait(None)  # Signal completion
+                completion_event.set()
+            except asyncio.TimeoutError:
+                logger.warning(f"Streaming request timed out for query: {request.query[:30]}...")
+                await queue.put("I'm sorry, but it's taking too long to generate a response. Please try a simpler question.")
+                timeout_event.set()
+                queue.put_nowait(None)
             except Exception as e:
-                await queue.put(f"Error: {str(e)}")
+                error_msg = str(e)
+                logger.error(f"Error in streaming process: {error_msg}")
+                await queue.put(f"Error: {error_msg}")
                 queue.put_nowait(None)
         
-        asyncio.create_task(process())
+        # Start the task
+        asyncio.create_task(process_with_timeout())
         
+        # Yield chunks as they arrive
         while True:
-            chunk = await queue.get()
-            if chunk is None:
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=95)  # Slightly longer than the main timeout
+                if chunk is None:
+                    break
+                yield f"data: {json.dumps({'content': chunk})}\n\n"
+            except asyncio.TimeoutError:
+                # Backup timeout if the queue gets stuck
+                if not completion_event.is_set() and not timeout_event.is_set():
+                    yield f"data: {json.dumps({'content': 'Response generation timed out. Please try again with a simpler question.'})}\n\n"
                 break
-            yield f"data: {json.dumps({'content': chunk})}\n\n"
     
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream"
+    )
 
-@app.get("/")
-async def api_root():
-    return {"status": "online", "message": "YouTube Creator Chatbot API"}
-
+@app.post("/chat/clear")
+async def clear_chat(request: ChatRequest):
+    """Clear chat history for a session"""
+    try:
+        chatbot = get_chatbot()
+        chatbot.clear_history()
+        logger.info(f"Cleared chat history for session: {request.session_id}")
+        return {"status": "success", "message": "Chat history cleared"}
+    except Exception as e:
+        logger.error(f"Error clearing chat history: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to clear chat history: {str(e)}"
+        )
 
 @app.get("/health")
 async def health_check():
@@ -172,5 +222,6 @@ if __name__ == "__main__":
         host="0.0.0.0", 
         port=int(os.getenv("PORT", 8080)),  # Changed default from 8000 to 8080
         timeout_keep_alive=120,  # Increase from default 5 seconds
-        timeout_notify=60        # Increase notification timeout
+        timeout_notify=60,       # Increase notification timeout
+        log_level="info"
     )

@@ -1,1 +1,1 @@
-web: gunicorn --worker-class uvicorn.workers.UvicornWorker app:app
+web: gunicorn -c gunicorn_config.py app:app

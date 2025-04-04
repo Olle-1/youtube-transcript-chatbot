@@ -186,6 +186,9 @@ class YouTubeTranscriptChatbot:
         
         # Initialize cache
         self.cache = {}
+        self.query_embedding_cache = {}  # Cache for query embeddings
+        self.cache_ttl = 3600  # Cache TTL in seconds (1 hour)
+        self.cache_timestamps = {}  # When items were added to cache
         
         # Connect to the retriever
         self.retriever = self._initialize_retriever()
@@ -235,9 +238,31 @@ class YouTubeTranscriptChatbot:
                     raise RuntimeError(f"Failed to generate embedding: {e}")
     
     async def retrieve_context(self, query: str) -> List[Dict]:
-        """Retrieve relevant context from vector store"""
+        """Retrieve relevant context from vector store with caching"""
         try:
-            documents = self.retriever.get_relevant_documents(query)
+            # Check for normalized query to improve cache hits
+            normalized_query = query.lower().strip()
+            current_time = time.time()
+            
+            # Clean expired cache entries
+            expired_keys = [k for k, t in self.cache_timestamps.items() 
+                          if current_time - t > self.cache_ttl]
+            for k in expired_keys:
+                if k in self.query_embedding_cache:
+                    del self.query_embedding_cache[k]
+                if k in self.cache_timestamps:
+                    del self.cache_timestamps[k]
+                    
+            # Use cached embedding if available
+            if normalized_query in self.query_embedding_cache:
+                logger.info(f"Using cached embedding for query: {normalized_query[:30]}...")
+                documents = self.retriever.get_relevant_documents(query)
+            else:
+                # Generate new embedding
+                documents = self.retriever.get_relevant_documents(query)
+                # Cache for future use
+                self.query_embedding_cache[normalized_query] = True
+                self.cache_timestamps[normalized_query] = current_time
             
             context_docs = []
             for doc in documents:
@@ -284,7 +309,7 @@ class YouTubeTranscriptChatbot:
         # Take the most relevant documents until we reach a reasonable token count
         optimized_docs = []
         current_tokens = 0
-        target_tokens = 3000  # Aim for 3000 tokens total
+        target_tokens = 2000  # Reduced target for faster processing
         
         for doc, score in scored_docs:
             doc_tokens = self.usage_tracker.estimate_tokens(doc["content"])
@@ -322,11 +347,16 @@ class YouTubeTranscriptChatbot:
         
         # Store in cache
         self.cache[normalized_query] = response
+        self.cache_timestamps[normalized_query] = time.time()
         
         # Limit cache size to prevent memory issues
         if len(self.cache) > 1000:
             # Remove oldest entry (simple approach)
-            self.cache.pop(next(iter(self.cache)))
+            oldest_key = min(self.cache_timestamps.items(), key=lambda x: x[1])[0]
+            if oldest_key in self.cache:
+                del self.cache[oldest_key]
+            if oldest_key in self.cache_timestamps:
+                del self.cache_timestamps[oldest_key]
     
     def select_model(self, query: str, context_length: int) -> str:
         """Select the appropriate model based on query and budget"""
@@ -354,6 +384,39 @@ class YouTubeTranscriptChatbot:
         
         # Default to the standard model
         return "deepseek-chat"
+    
+    async def get_streaming_response_with_timeout(self, 
+                                               query: str,
+                                               callback: Optional[Callable[[str], None]] = None,
+                                               timeout_seconds: int = 90) -> str:
+        """Get a streaming response with a timeout to prevent server hanging"""
+        try:
+            # Start timing
+            start_time = time.time()
+            logger.info(f"Starting response generation with {timeout_seconds}s timeout")
+            
+            # Create a task for the original function
+            response_task = asyncio.create_task(
+                self.get_streaming_response(query, callback)
+            )
+            
+            # Wait for the response with a timeout
+            response = await asyncio.wait_for(response_task, timeout=timeout_seconds)
+            
+            # Log completion time
+            elapsed = time.time() - start_time
+            logger.info(f"Response generated in {elapsed:.2f} seconds")
+            
+            return response
+            
+        except asyncio.TimeoutError:
+            # Handle timeout gracefully
+            logger.warning(f"Response timed out after {timeout_seconds} seconds")
+            return "I'm sorry, but it took too long to generate a response. Could you try a simpler question or try again later?"
+            
+        except Exception as e:
+            logger.error(f"Error in get_streaming_response_with_timeout: {str(e)}")
+            return f"I encountered an error while generating a response: {str(e)}"
     
     async def get_streaming_response(self, 
                                      query: str, 
@@ -403,6 +466,8 @@ class YouTubeTranscriptChatbot:
         {context_text}
         
         If you don't know the answer based on the context, just say "I don't have enough information about that in my knowledge base." Don't make up answers.
+        
+        Keep your answers concise and to the point.
         """
         
         # All messages combined for token estimation
@@ -434,8 +499,9 @@ class YouTubeTranscriptChatbot:
                     model=model,
                     messages=messages,
                     temperature=0.3,
-                    max_tokens=800,
-                    stream=True
+                    max_tokens=500,        # Reduced tokens
+                    stream=True,
+                    timeout=60             # Explicit timeout for the API call
                 )
             )
             
@@ -476,8 +542,8 @@ class YouTubeTranscriptChatbot:
             self.chat_history.append(formatted_response)
             
             # Limit history length to prevent context window issues
-            if len(self.chat_history) > 10:  # Keep last 5 exchanges
-                self.chat_history = self.chat_history[-10:]
+            if len(self.chat_history) > 8:  # Keep last 4 exchanges
+                self.chat_history = self.chat_history[-8:]
             
             # Cache the response
             self.update_cache(query, formatted_response)
@@ -578,8 +644,8 @@ async def terminal_chat():
         def print_chunk(chunk):
             print(chunk, end="", flush=True)
         
-        # Get streaming response
-        await chatbot.get_streaming_response(user_input, print_chunk)
+        # Get streaming response with timeout protection
+        await chatbot.get_streaming_response_with_timeout(user_input, print_chunk)
         print()  # Add newline after response
 
 
