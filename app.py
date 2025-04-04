@@ -159,4 +159,11 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    # Increase timeout settings
+    uvicorn.run(
+        "app:app", 
+        host="0.0.0.0", 
+        port=int(os.getenv("PORT", 8000)),
+        timeout_keep_alive=120,  # Increase from default 5 seconds
+        timeout_notify=60        # Increase notification timeout
+    )
