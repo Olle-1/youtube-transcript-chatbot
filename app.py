@@ -166,11 +166,11 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    # Increase timeout settings
+    # Use 8080 as the default port to match DigitalOcean
     uvicorn.run(
         "app:app", 
         host="0.0.0.0", 
-        port=int(os.getenv("PORT", 8000)),
+        port=int(os.getenv("PORT", 8080)),  # Changed default from 8000 to 8080
         timeout_keep_alive=120,  # Increase from default 5 seconds
         timeout_notify=60        # Increase notification timeout
     )
