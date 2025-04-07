@@ -136,32 +136,23 @@ async def chat(request: ChatRequest):
 
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """Streaming chat endpoint for real-time responses with timeout protection"""
-    chatbot = get_chatbot()  # Will use creator_id in the future
+    """Streaming chat endpoint for real-time responses with no timeout"""
+    chatbot = get_chatbot()
     logger.info(f"Received streaming chat request with query: {request.query[:30]}...")
     
     async def generate():
         queue = asyncio.Queue()
         completion_event = asyncio.Event()
-        timeout_event = asyncio.Event()
         
         def handle_chunk(chunk):
             queue.put_nowait(chunk)
         
-        async def process_with_timeout():
+        async def process():
             try:
-                # Use timeout
-                await asyncio.wait_for(
-                    chatbot.get_streaming_response(request.query, handle_chunk),
-                    timeout=90  # 90 second timeout
-                )
+                # No timeout here - let it run as long as needed
+                await chatbot.get_streaming_response(request.query, handle_chunk)
                 queue.put_nowait(None)  # Signal completion
                 completion_event.set()
-            except asyncio.TimeoutError:
-                logger.warning(f"Streaming request timed out for query: {request.query[:30]}...")
-                await queue.put("I'm sorry, but it's taking too long to generate a response. Please try a simpler question.")
-                timeout_event.set()
-                queue.put_nowait(None)
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"Error in streaming process: {error_msg}")
@@ -169,19 +160,18 @@ async def chat_stream(request: ChatRequest):
                 queue.put_nowait(None)
         
         # Start the task
-        asyncio.create_task(process_with_timeout())
+        asyncio.create_task(process())
         
-        # Yield chunks as they arrive
+        # Yield chunks as they arrive - no timeout on the generator
         while True:
             try:
-                chunk = await asyncio.wait_for(queue.get(), timeout=95)  # Slightly longer than the main timeout
+                chunk = await queue.get()
                 if chunk is None:
                     break
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
-            except asyncio.TimeoutError:
-                # Backup timeout if the queue gets stuck
-                if not completion_event.is_set() and not timeout_event.is_set():
-                    yield f"data: {json.dumps({'content': 'Response generation timed out. Please try again with a simpler question.'})}\n\n"
+            except Exception as e:
+                logger.error(f"Error in stream generator: {str(e)}")
+                yield f"data: {json.dumps({'content': f'\\nError during streaming: {str(e)}\\n'})}\n\n"
                 break
     
     return StreamingResponse(

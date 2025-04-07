@@ -1,1 +1,1 @@
-web: gunicorn -c gunicorn_config.py app:app
+web: gunicorn --worker-class uvicorn.workers.UvicornWorker --timeout 300 --graceful-timeout 300 --keep-alive 120 app:app
