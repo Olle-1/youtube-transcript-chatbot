@@ -134,6 +134,8 @@ async def chat(request: ChatRequest):
                 detail=f"An error occurred: {error_msg}"
             )
 
+# Replace the existing chat_stream function in app.py
+
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming chat endpoint for real-time responses with no timeout"""
@@ -171,7 +173,9 @@ async def chat_stream(request: ChatRequest):
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             except Exception as e:
                 logger.error(f"Error in stream generator: {str(e)}")
-                yield f"data: {json.dumps({'content': f'\\nError during streaming: {str(e)}\\n'})}\n\n"
+                # Fixed version that doesn't use backslashes in nested f-strings
+                error_message = "Error during streaming: " + str(e)
+                yield f"data: {json.dumps({'content': error_message})}\n\n"
                 break
     
     return StreamingResponse(
