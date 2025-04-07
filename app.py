@@ -138,50 +138,41 @@ async def chat(request: ChatRequest):
 
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """Streaming chat endpoint for real-time responses with no timeout"""
-    chatbot = get_chatbot()
-    logger.info(f"Received streaming chat request with query: {request.query[:30]}...")
+    """Streaming chat endpoint for real-time responses"""
+    chatbot = get_chatbot()  # Will use creator_id in the future
     
     async def generate():
         queue = asyncio.Queue()
-        completion_event = asyncio.Event()
         
         def handle_chunk(chunk):
             queue.put_nowait(chunk)
         
         async def process():
             try:
-                # No timeout here - let it run as long as needed
                 await chatbot.get_streaming_response(request.query, handle_chunk)
                 queue.put_nowait(None)  # Signal completion
-                completion_event.set()
             except Exception as e:
-                error_msg = str(e)
-                logger.error(f"Error in streaming process: {error_msg}")
-                await queue.put(f"Error: {error_msg}")
+                error_msg = f"Error: {str(e)}"
+                error_json = json.dumps({"content": error_msg})
+                await queue.put(f"data: {error_json}\n\n")
                 queue.put_nowait(None)
         
-        # Start the task
         asyncio.create_task(process())
         
-        # Yield chunks as they arrive - no timeout on the generator
         while True:
-            try:
-                chunk = await queue.get()
-                if chunk is None:
-                    break
-                yield f"data: {json.dumps({'content': chunk})}\n\n"
-            except Exception as e:
-                logger.error(f"Error in stream generator: {str(e)}")
-                # Fixed version that doesn't use backslashes in nested f-strings
-                error_message = "Error during streaming: " + str(e)
-                yield f"data: {json.dumps({'content': error_message})}\n\n"
+            chunk = await queue.get()
+            if chunk is None:
                 break
+            
+            # Avoid nested f-strings with escapes
+            if isinstance(chunk, str):
+                content_json = json.dumps({"content": chunk})
+                yield f"data: {content_json}\n\n"
+            else:
+                # If chunk is already a dict or something else
+                yield f"data: {json.dumps(chunk)}\n\n"
     
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream"
-    )
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 @app.post("/chat/clear")
 async def clear_chat(request: ChatRequest):
