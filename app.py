@@ -103,13 +103,29 @@ async def health_check():
 # Standard chat endpoint
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Standard chat endpoint with full response"""
+    """Standard chat endpoint with full response and timeout handling"""
     chatbot = get_chatbot()
     
     try:
+        # Log the start of processing
+        logger.info(f"Starting chat processing for query: {request.query[:50]}...")
+        start_time = time.time()
+        
         # Set a timeout for the AI response
-        async with asyncio.timeout(90):  # 90 second timeout
-            response = await chatbot.get_streaming_response(request.query)
+        try:
+            async with asyncio.timeout(90):  # 90 second timeout
+                response = await chatbot.get_streaming_response(request.query)
+                
+            # Log successful completion and timing
+            elapsed = time.time() - start_time
+            logger.info(f"Chat processing completed in {elapsed:.2f} seconds")
+            
+        except asyncio.TimeoutError:
+            logger.warning(f"Response generation timed out after 90s for query: {request.query[:100]}...")
+            return {
+                "response": "I'm sorry, but it's taking me longer than expected to generate a response. Please try asking a simpler question or try again later.",
+                "sources": []
+            }
         
         # Extract sources from response if present
         sources = []
@@ -132,20 +148,36 @@ async def chat(request: ChatRequest):
             "sources": sources
         }
     
-    except asyncio.TimeoutError:
-        logger.error(f"Response generation timed out for query: {request.query[:100]}...")
+    except Exception as e:
+        # Log the full error with context
+        logger.error(f"Error in chat endpoint: {str(e)}", exc_info=True)
+        
+        # Return a helpful error message
         return {
-            "response": "I'm sorry, but it's taking me longer than expected to generate a response. Please try asking a simpler question or try again later.",
+            "response": f"I encountered an error processing your request. Please try again or ask a different question. Error details: {str(e)}",
             "sources": []
         }
-    except Exception as e:
-        logger.error(f"Error in chat endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 # Streaming chat endpoint
-@app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
-    """Streaming chat endpoint for real-time responses"""
+@app.get("/chat/stream")  # Add GET support for EventSource
+@app.post("/chat/stream") # Keep POST for API clients
+async def chat_stream(
+    request: ChatRequest = None,  # For POST requests with JSON body
+    query: str = None,            # For GET requests with query params
+    session_id: str = None        # For GET requests with query params
+):
+    """Streaming chat endpoint for real-time responses - supports both GET and POST"""
+    # If this is a GET request, parameters will be in the query string
+    if request is None and query:
+        request = ChatRequest(query=query, session_id=session_id or "default")
+    
+    # If we still don't have a valid request, return an error
+    if request is None or not request.query:
+        raise HTTPException(
+            status_code=400, 
+            detail="Missing required parameters. Please provide 'query' parameter."
+        )
+    
     chatbot = get_chatbot()
     
     async def generate():
@@ -207,13 +239,17 @@ async def chat_stream(request: ChatRequest):
             if not task.done():
                 task.cancel()
     
+    # Add explicit CORS headers to help with browser issues
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable Nginx buffering
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
         }
     )
 
