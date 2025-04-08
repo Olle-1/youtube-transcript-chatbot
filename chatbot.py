@@ -419,9 +419,9 @@ class YouTubeTranscriptChatbot:
             return f"I encountered an error while generating a response: {str(e)}"
     
     async def get_streaming_response(self, 
-                                     query: str, 
-                                     callback: Optional[Callable[[str], None]] = None) -> str:
-        """Get a streaming response from DeepSeek API"""
+                                query: str, 
+                                callback: Optional[Callable[[str], None]] = None) -> str:
+        """Get a streaming response from DeepSeek API with improved history handling"""
         # Check cache first
         cached_response = self.check_cache(query)
         if cached_response:
@@ -444,21 +444,10 @@ class YouTubeTranscriptChatbot:
             for doc in optimized_context
         ])
         
-        # Format chat history
-        history_text = ""
-        if self.chat_history:
-            history_pairs = []
-            for i in range(0, len(self.chat_history), 2):
-                if i+1 < len(self.chat_history):
-                    q = self.chat_history[i]
-                    a = self.chat_history[i+1]
-                    history_pairs.append(f"Human: {q}\nAssistant: {a}")
-            history_text = "\n".join(history_pairs)
+        # Format chat history - FIXED FOR DEEPSEEK REASONER COMPATIBILITY
+        messages = []
         
-        # Select model based on query complexity and budget
-        model = self.select_model(query, len(context_text))
-        
-        # System message
+        # System message always goes first
         system_message = f"""
         You are an AI assistant specialized in {CREATOR_NAME}'s fitness and bodybuilding knowledge. 
         Answer the question based ONLY on the following context:
@@ -466,12 +455,28 @@ class YouTubeTranscriptChatbot:
         {context_text}
         
         If you don't know the answer based on the context, just say "I don't have enough information about that in my knowledge base." Don't make up answers.
-        
-        Keep your answers concise and to the point.
         """
         
-        # All messages combined for token estimation
-        all_text = system_message + history_text + query
+        messages.append({"role": "system", "content": system_message})
+        
+        # Add chat history in proper alternating format
+        if self.chat_history:
+            # Process history in pairs
+            for i in range(0, len(self.chat_history) - 1, 2):
+                if i+1 < len(self.chat_history):
+                    user_msg = self.chat_history[i]
+                    assistant_msg = self.chat_history[i+1]
+                    
+                    # Add as properly formatted messages
+                    messages.append({"role": "user", "content": user_msg})
+                    messages.append({"role": "assistant", "content": assistant_msg})
+        
+        # Add current query - but only if it's not already the last user message
+        if not self.chat_history or self.chat_history[-1] != query:
+            messages.append({"role": "user", "content": query})
+        
+        # All text combined for token estimation
+        all_text = system_message + query
         estimated_input_tokens = self.usage_tracker.estimate_tokens(all_text)
         
         # Check daily budget
@@ -481,44 +486,16 @@ class YouTubeTranscriptChatbot:
             return "I've reached my daily usage limit. Please try again tomorrow."
         
         try:
+            # Select model based on query complexity and budget
+            model = self.select_model(query, len(context_text))
             
-            # ==== CHANGES TO chatbot.py ====
-
-            # 1. FIX DEEPSEEK REASONER FORMAT (in the get_streaming_response method)
-            # Replace the existing message creation code with:
-
-            messages = [
-                {"role": "system", "content": system_message}
-            ]
-
-            # Handle chat history formatting properly
-            if self.chat_history:
-                # Ensure messages are properly interleaved user/assistant
-                # DeepSeek reasoner specifically requires this pattern
-                for i in range(0, len(self.chat_history), 2):
-                    if i+1 < len(self.chat_history):
-                        # Add a user message
-                        messages.append({"role": "user", "content": self.chat_history[i]})
-                        # Add the assistant response
-                        messages.append({"role": "assistant", "content": self.chat_history[i+1]})
-                    else:
-                        # If there's an odd number of messages, add the last user message
-                        messages.append({"role": "user", "content": self.chat_history[i]})
-
-            # Add current query - but only if it's not a duplicate of the last message
-            if not self.chat_history or query != self.chat_history[-1]:
-                messages.append({"role": "user", "content": query})
-
-            # Log message structure for debugging
-            logger.info(f"Using {model} with {len(messages)} messages")
-
-            # Later in this method, also ensure max_tokens is increased:
+            # Make API call with streaming enabled
             response_stream = await asyncio.to_thread(
                 lambda: self.client.chat.completions.create(
                     model=model,
                     messages=messages,
                     temperature=0.3,
-                    max_tokens=2000,  # Increased from 800 to 2000
+                    max_tokens=2000,  # Increased from 800 to allow longer responses
                     stream=True
                 )
             )
@@ -534,34 +511,24 @@ class YouTubeTranscriptChatbot:
                     if callback:
                         callback(content)
             
-            # Get usage data if available
-            usage_data = getattr(response_stream, "usage", None)
-            if usage_data:
-                actual_tokens = {
-                    "input": usage_data.prompt_tokens,
-                    "output": usage_data.completion_tokens
-                }
-            else:
-                actual_tokens = None
-            
             # Log the request
             self.usage_tracker.log_request(
                 model=model,
                 input_text=all_text,
                 output_text=full_response,
-                actual_token_counts=actual_tokens
+                actual_token_counts=None  # Will use estimates since we're streaming
             )
             
             # Format with source citations
             formatted_response = self.format_response_with_citations(full_response, optimized_context)
             
-            # Add to chat history
+            # Add to chat history - we add both the query and response
             self.chat_history.append(query)
             self.chat_history.append(formatted_response)
             
             # Limit history length to prevent context window issues
-            if len(self.chat_history) > 8:  # Keep last 4 exchanges
-                self.chat_history = self.chat_history[-8:]
+            if len(self.chat_history) > 10:  # Keep last 5 exchanges
+                self.chat_history = self.chat_history[-10:]
             
             # Cache the response
             self.update_cache(query, formatted_response)
@@ -577,8 +544,8 @@ class YouTubeTranscriptChatbot:
             elif "context length" in error_msg.lower():
                 return "Your question and context are too long for me to process. Could you ask a shorter question?"
             else:
-                return "I encountered an error processing your request. Please try again."
-    
+                return f"I encountered an error processing your request: {error_msg}"
+            
     def format_response_with_citations(self, response: str, context_docs: List[Dict]) -> str:
         """Add source citations to the response"""
         if not context_docs:
