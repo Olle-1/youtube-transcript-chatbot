@@ -2,13 +2,15 @@ import os
 import json
 import asyncio
 import re
+import time
+import logging
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
-import logging
 
 # Import chatbot (the complete Module 4 implementation)
 from chatbot import YouTubeTranscriptChatbot
@@ -44,6 +46,43 @@ allowed_origins = [
     "*"  # Allow all origins during development - remove this in production
 ]
 
+# Add a logging middleware for better diagnostics
+class LoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        start_time = time.time()
+        
+        # Log request details
+        request_id = f"{int(time.time() * 1000)}"
+        logger.info(f"[{request_id}] Request: {request.method} {request.url.path}")
+        
+        # Try to log request body for POST/PUT
+        if request.method in ["POST", "PUT"]:
+            try:
+                body = await request.body()
+                if body:
+                    # Limit body logging to avoid huge logs
+                    body_str = body.decode()
+                    if len(body_str) > 1000:
+                        body_str = body_str[:1000] + "... [truncated]"
+                    logger.info(f"[{request_id}] Request body: {body_str}")
+            except Exception as e:
+                logger.warning(f"[{request_id}] Could not log request body: {e}")
+        
+        try:
+            # Process the request
+            response = await call_next(request)
+            
+            # Log response details
+            process_time = time.time() - start_time
+            logger.info(f"[{request_id}] Response: {response.status_code} (took {process_time:.4f}s)")
+            
+            return response
+        except Exception as e:
+            # Log any unhandled exceptions
+            process_time = time.time() - start_time
+            logger.error(f"[{request_id}] Unhandled exception: {str(e)} (after {process_time:.4f}s)")
+            raise
+
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
@@ -53,6 +92,9 @@ app.add_middleware(
     allow_headers=["*"],
     max_age=86400,  # Cache preflight requests for 24 hours
 )
+
+# Add logging middleware
+app.add_middleware(LoggingMiddleware)
 
 # Request models
 class ChatRequest(BaseModel):
@@ -79,16 +121,20 @@ async def api_root():
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    """Standard chat endpoint with full response and timeout protection"""
+    """Standard chat endpoint with full response"""
+    logger.info(f"Received chat request with query: {request.query[:20]}...")
+    logger.info(f"Starting response generation with 90s timeout")
+    start_time = time.time()
+    
     chatbot = get_chatbot()  # Will use creator_id in the future
-    logger.info(f"Received chat request with query: {request.query[:30]}...")
     
     try:
-        # Use the timeout-protected version
-        response = await chatbot.get_streaming_response_with_timeout(
-            request.query, 
-            timeout_seconds=90  # 90 second timeout
-        )
+        # Use asyncio.timeout to enforce a timeout limit
+        async with asyncio.timeout(90):
+            response = await chatbot.get_streaming_response(request.query)
+        
+        elapsed = time.time() - start_time
+        logger.info(f"Response generated in {elapsed:.2f} seconds")
         
         # Extract sources from response if present
         sources = []
@@ -106,73 +152,104 @@ async def chat(request: ChatRequest):
         else:
             main_response = response
         
-        logger.info(f"Successfully generated response for query: {request.query[:30]}...")
+        logger.info(f"Successfully generated response for query: {request.query[:20]}...")
         return {
             "response": main_response,
             "sources": sources
         }
     
     except asyncio.TimeoutError:
-        logger.warning(f"Request timed out for query: {request.query[:30]}...")
-        raise HTTPException(
-            status_code=504,
-            detail="Request timed out. Please try a simpler question."
-        )
+        logger.error(f"Timeout after {time.time() - start_time:.2f}s for query: {request.query[:20]}...")
+        raise HTTPException(status_code=504, detail="Request timed out. Please try a simpler question.")
     except Exception as e:
-        # Better error handling
-        error_msg = str(e)
-        logger.error(f"Error in chat endpoint: {error_msg}")
-        
-        if "timeout" in error_msg.lower():
-            raise HTTPException(
-                status_code=504,
-                detail="Request timed out. Please try a simpler question."
-            )
-        else:
-            raise HTTPException(
-                status_code=500, 
-                detail=f"An error occurred: {error_msg}"
-            )
-
-# Replace the existing chat_stream function in app.py
+        logger.error(f"Error processing request: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming chat endpoint for real-time responses"""
+    # Get the appropriate chatbot instance
     chatbot = get_chatbot()  # Will use creator_id in the future
     
     async def generate():
+        """Generate streaming response chunks"""
+        # Set proper headers for SSE
+        yield "retry: 1000\n\n"  # Reconnection time in milliseconds
+        
+        # Create queue for passing chunks between tasks
         queue = asyncio.Queue()
         
+        # Callback function that receives chunks from the chatbot
         def handle_chunk(chunk):
+            """Callback to receive chunks from the streaming response"""
             queue.put_nowait(chunk)
         
+        # Background task to process the request
         async def process():
+            """Process the streaming request"""
             try:
-                await chatbot.get_streaming_response(request.query, handle_chunk)
-                queue.put_nowait(None)  # Signal completion
+                # Set a timeout for the entire request
+                # This is important to prevent hanging connections
+                async with asyncio.timeout(90):  # 90 second timeout
+                    await chatbot.get_streaming_response(request.query, handle_chunk)
+                    # Signal completion
+                    queue.put_nowait(None)
+            except asyncio.TimeoutError:
+                # Handle timeout case
+                error_message = "Request timed out after 90 seconds"
+                error_data = json.dumps({"content": error_message})
+                await queue.put(f"data: {error_data}\n\n")
+                queue.put_nowait(None)
             except Exception as e:
-                error_msg = f"Error: {str(e)}"
-                error_json = json.dumps({"content": error_msg})
-                await queue.put(f"data: {error_json}\n\n")
+                # Handle other errors
+                error_message = str(e).replace('\n', ' ')
+                error_data = json.dumps({"content": f"Error: {error_message}"})
+                await queue.put(f"data: {error_data}\n\n")
                 queue.put_nowait(None)
         
+        # Start the processing task
         asyncio.create_task(process())
         
+        # Stream chunks back to the client
         while True:
-            chunk = await queue.get()
-            if chunk is None:
+            try:
+                # Wait for the next chunk
+                chunk = await queue.get()
+                
+                # None signals the end of the stream
+                if chunk is None:
+                    break
+                
+                # Format chunk as a server-sent event
+                if isinstance(chunk, str):
+                    # Simple string content
+                    data = json.dumps({"content": chunk})
+                    yield f"data: {data}\n\n"
+                else:
+                    # Already formatted data
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                
+                # Small delay to prevent overwhelming the connection
+                await asyncio.sleep(0.01)
+                
+            except Exception as e:
+                # Log any errors that occur during streaming
+                logger.error(f"Error during streaming: {e}")
+                error_data = json.dumps({"content": "Error during streaming"})
+                yield f"data: {error_data}\n\n"
                 break
-            
-            # Avoid nested f-strings with escapes
-            if isinstance(chunk, str):
-                content_json = json.dumps({"content": chunk})
-                yield f"data: {content_json}\n\n"
-            else:
-                # If chunk is already a dict or something else
-                yield f"data: {json.dumps(chunk)}\n\n"
     
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    # Return a streaming response with appropriate headers
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "X-Accel-Buffering": "no"  # Prevents proxies from buffering the response
+        }
+    )
 
 @app.post("/chat/clear")
 async def clear_chat(request: ChatRequest):

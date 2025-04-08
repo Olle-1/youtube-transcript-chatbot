@@ -481,27 +481,48 @@ class YouTubeTranscriptChatbot:
             return "I've reached my daily usage limit. Please try again tomorrow."
         
         try:
-            # Set up messages for the API call
+            
+            # ==== CHANGES TO chatbot.py ====
+
+            # 1. FIX DEEPSEEK REASONER FORMAT (in the get_streaming_response method)
+            # Replace the existing message creation code with:
+
+            # Messages for DeepSeek API
             messages = [
                 {"role": "system", "content": system_message}
-            ]
-            
-            # Add chat history if it exists
-            if history_text:
-                messages.append({"role": "user", "content": history_text})
-            
-            # Add current query
-            messages.append({"role": "user", "content": query})
-            
-            # Make API call with streaming enabled
-            response_stream = await asyncio.to_thread(
+                ]
+
+                # Handle chat history formatting properly
+            if self.chat_history:
+                # Ensure messages are properly interleaved user/assistant
+                # DeepSeek reasoner specifically requires this pattern
+                for i in range(0, len(self.chat_history), 2):
+                    if i+1 < len(self.chat_history):
+                        # Add a user message
+                        messages.append({"role": "user", "content": self.chat_history[i]})
+                        # Add the assistant response
+                        messages.append({"role": "assistant", "content": self.chat_history[i+1]})
+                    else:
+                        # If there's an odd number of messages, add the last user message
+                        messages.append({"role": "user", "content": self.chat_history[i]})
+
+                # Add current query - but only if it's not a duplicate of the last message
+            if not self.chat_history or query != self.chat_history[-1]:
+                messages.append({"role": "user", "content": query})
+
+                # Log message structure for debugging
+                logger.info(f"Using {model} with {len(messages)} messages")
+
+
+                # 2. INCREASE TOKEN LIMIT (later in the same method)
+                # Find this section:
+                response_stream = await asyncio.to_thread(
                 lambda: self.client.chat.completions.create(
                     model=model,
                     messages=messages,
                     temperature=0.3,
-                    max_tokens=500,        # Reduced tokens
-                    stream=True,
-                    timeout=60             # Explicit timeout for the API call
+                    max_tokens=2000,  # <-- Change this line
+                    stream=True
                 )
             )
             
