@@ -55,27 +55,6 @@ app.add_middleware(
     max_age=86400,  # Cache preflight requests for 24 hours
 )
 
-# This uses a simple middleware function instead of a middleware class
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """Middleware to log all requests and responses"""
-    start_time = time.time()
-    request_id = f"{int(time.time() * 1000)}"
-    
-    # Log request details
-    logger.info(f"[{request_id}] Request: {request.method} {request.url.path}")
-    
-    # Process the request
-    try:
-        response = await call_next(request)
-        process_time = time.time() - start_time
-        logger.info(f"[{request_id}] Response: {response.status_code} (took {process_time:.4f}s)")
-        return response
-    except Exception as e:
-        process_time = time.time() - start_time
-        logger.error(f"[{request_id}] Error: {str(e)} (after {process_time:.4f}s)")
-        raise
-
 # Request models
 class ChatRequest(BaseModel):
     query: str

@@ -487,12 +487,11 @@ class YouTubeTranscriptChatbot:
             # 1. FIX DEEPSEEK REASONER FORMAT (in the get_streaming_response method)
             # Replace the existing message creation code with:
 
-            # Messages for DeepSeek API
             messages = [
                 {"role": "system", "content": system_message}
-                ]
+            ]
 
-                # Handle chat history formatting properly
+            # Handle chat history formatting properly
             if self.chat_history:
                 # Ensure messages are properly interleaved user/assistant
                 # DeepSeek reasoner specifically requires this pattern
@@ -506,22 +505,20 @@ class YouTubeTranscriptChatbot:
                         # If there's an odd number of messages, add the last user message
                         messages.append({"role": "user", "content": self.chat_history[i]})
 
-                # Add current query - but only if it's not a duplicate of the last message
+            # Add current query - but only if it's not a duplicate of the last message
             if not self.chat_history or query != self.chat_history[-1]:
                 messages.append({"role": "user", "content": query})
 
-                # Log message structure for debugging
-                logger.info(f"Using {model} with {len(messages)} messages")
+            # Log message structure for debugging
+            logger.info(f"Using {model} with {len(messages)} messages")
 
-
-                # 2. INCREASE TOKEN LIMIT (later in the same method)
-                # Find this section:
-                response_stream = await asyncio.to_thread(
+            # Later in this method, also ensure max_tokens is increased:
+            response_stream = await asyncio.to_thread(
                 lambda: self.client.chat.completions.create(
                     model=model,
                     messages=messages,
                     temperature=0.3,
-                    max_tokens=2000,  # <-- Change this line
+                    max_tokens=2000,  # Increased from 800 to 2000
                     stream=True
                 )
             )
