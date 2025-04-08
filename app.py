@@ -6,7 +6,6 @@ import time
 import logging
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -46,43 +45,6 @@ allowed_origins = [
     "*"  # Allow all origins during development - remove this in production
 ]
 
-# Add a logging middleware for better diagnostics
-class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        start_time = time.time()
-        
-        # Log request details
-        request_id = f"{int(time.time() * 1000)}"
-        logger.info(f"[{request_id}] Request: {request.method} {request.url.path}")
-        
-        # Try to log request body for POST/PUT
-        if request.method in ["POST", "PUT"]:
-            try:
-                body = await request.body()
-                if body:
-                    # Limit body logging to avoid huge logs
-                    body_str = body.decode()
-                    if len(body_str) > 1000:
-                        body_str = body_str[:1000] + "... [truncated]"
-                    logger.info(f"[{request_id}] Request body: {body_str}")
-            except Exception as e:
-                logger.warning(f"[{request_id}] Could not log request body: {e}")
-        
-        try:
-            # Process the request
-            response = await call_next(request)
-            
-            # Log response details
-            process_time = time.time() - start_time
-            logger.info(f"[{request_id}] Response: {response.status_code} (took {process_time:.4f}s)")
-            
-            return response
-        except Exception as e:
-            # Log any unhandled exceptions
-            process_time = time.time() - start_time
-            logger.error(f"[{request_id}] Unhandled exception: {str(e)} (after {process_time:.4f}s)")
-            raise
-
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
@@ -93,8 +55,26 @@ app.add_middleware(
     max_age=86400,  # Cache preflight requests for 24 hours
 )
 
-# Add logging middleware
-app.add_middleware(LoggingMiddleware)
+# This uses a simple middleware function instead of a middleware class
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Middleware to log all requests and responses"""
+    start_time = time.time()
+    request_id = f"{int(time.time() * 1000)}"
+    
+    # Log request details
+    logger.info(f"[{request_id}] Request: {request.method} {request.url.path}")
+    
+    # Process the request
+    try:
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        logger.info(f"[{request_id}] Response: {response.status_code} (took {process_time:.4f}s)")
+        return response
+    except Exception as e:
+        process_time = time.time() - start_time
+        logger.error(f"[{request_id}] Error: {str(e)} (after {process_time:.4f}s)")
+        raise
 
 # Request models
 class ChatRequest(BaseModel):
