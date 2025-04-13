@@ -1,6 +1,8 @@
 # crud/user_crud.py
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from models.db_models import User
 from schemas.user_schemas import UserCreate
 from auth.utils import get_password_hash
@@ -15,10 +17,23 @@ async def create_user(db: AsyncSession, user: UserCreate) -> User:
     """Creates a new user in the database."""
     hashed_password = get_password_hash(user.password)
     db_user = User(email=user.email, hashed_password=hashed_password)
-    db.add(db_user)
-    await db.commit()
-    await db.refresh(db_user)
-    return db_user
+    try:
+        db.add(db_user)
+        await db.commit()
+        await db.refresh(db_user)
+        return db_user
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Username or email already registered"
+        )
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected database error occurred during user creation"
+        )
 
 async def update_user_profile_settings(
     db: AsyncSession, user_id: int, settings_data: Dict[str, Any]

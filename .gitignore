@@ -24,7 +24,7 @@ yarn-error.log*
 
 # Logs
 *.log
-
+docker-compose.yml
 # Local data (Existing - preserved)
 chunks/
 raw/
@@ -33,3 +33,4 @@ embeddings/
 
 # Usage tracking (Existing - preserved)
 api_usage.json
+.roomodes
