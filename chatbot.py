@@ -1,3 +1,4 @@
+# chatbot.py (Corrected Version)
 import os
 import time
 import json
@@ -32,18 +33,18 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
 # Constants
-INDEX_NAME = "youtube-transcript-mountaindog1"
-CREATOR_NAME = "MountainDog1"  # This could be dynamically loaded
+INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "youtube-transcript-mountaindog1") # Use env var or default
+CREATOR_NAME = os.getenv("CREATOR_NAME", "MountainDog1") # Use env var or default
 CHATBOT_NAME = f"{CREATOR_NAME} Assistant"
-DAILY_BUDGET = 1.0  # $1 per day budget limit
+DAILY_BUDGET = float(os.getenv("DAILY_BUDGET", 1.0)) # Use env var or default
 
 class UsageTracker:
     """Track API usage and costs"""
-    
+
     def __init__(self, log_file: str = "api_usage.json"):
         self.log_file = log_file
         self.usage_log = self._load_usage_log()
-        
+
         # DeepSeek pricing (as of documentation)
         self.pricing = {
             "deepseek-chat": {
@@ -55,10 +56,14 @@ class UsageTracker:
                 "output": 0.40   # per million tokens
             }
         }
-        
+
         # Initialize tokenizer for estimating token counts
-        self.tokenizer = tiktoken.get_encoding("cl100k_base")  # Similar to GPT-4 tokenizer
-    
+        try:
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")  # Similar to GPT-4 tokenizer
+        except Exception as e:
+            logger.error(f"Failed to load tiktoken tokenizer: {e}. Falling back to simple split.")
+            self.tokenizer = None # Fallback
+
     def _load_usage_log(self) -> Dict:
         """Load the usage log from file or create a new one"""
         if os.path.exists(self.log_file):
@@ -66,47 +71,52 @@ class UsageTracker:
                 with open(self.log_file, 'r') as f:
                     return json.load(f)
             except json.JSONDecodeError:
-                logger.warning(f"Error loading usage log. Creating new log.")
-        
+                logger.warning(f"Error loading usage log {self.log_file}. Creating new log.")
         # Initialize new log structure
         return {
-            "total_tokens": {
-                "input": 0,
-                "output": 0
-            },
+            "total_tokens": {"input": 0, "output": 0},
             "total_cost": 0.0,
             "requests": []
         }
-    
+
     def _save_usage_log(self):
         """Save the usage log to file"""
-        with open(self.log_file, 'w') as f:
-            json.dump(self.usage_log, f, indent=2)
-    
+        try:
+            with open(self.log_file, 'w') as f:
+                json.dump(self.usage_log, f, indent=2)
+        except IOError as e:
+            logger.error(f"Failed to save usage log to {self.log_file}: {e}")
+
     def estimate_tokens(self, text: str) -> int:
         """Estimate the number of tokens in a text string"""
-        return len(self.tokenizer.encode(text))
-    
-    def log_request(self, 
-                    model: str, 
-                    input_text: str, 
-                    output_text: str, 
+        if self.tokenizer:
+            try:
+                return len(self.tokenizer.encode(text))
+            except Exception as e:
+                logger.warning(f"Tiktoken encoding failed: {e}. Using simple split.")
+                return len(text.split()) # Simple fallback
+        else:
+            return len(text.split()) # Simple fallback
+
+    def log_request(self,
+                    model: str,
+                    input_text: str,
+                    output_text: str,
                     actual_token_counts: Optional[Dict[str, int]] = None):
         """Log an API request with token counts and costs"""
-        # Use actual token counts from API if provided, otherwise estimate
         if actual_token_counts:
             input_tokens = actual_token_counts.get("input", 0)
             output_tokens = actual_token_counts.get("output", 0)
         else:
             input_tokens = self.estimate_tokens(input_text)
             output_tokens = self.estimate_tokens(output_text)
-        
+
         # Calculate cost
-        model_pricing = self.pricing.get(model, self.pricing["deepseek-chat"])
+        model_pricing = self.pricing.get(model, self.pricing["deepseek-chat"]) # Default to chat if model unknown
         input_cost = (input_tokens / 1_000_000) * model_pricing["input"]
         output_cost = (output_tokens / 1_000_000) * model_pricing["output"]
         total_cost = input_cost + output_cost
-        
+
         # Create log entry
         log_entry = {
             "timestamp": datetime.now().isoformat(),
@@ -122,43 +132,51 @@ class UsageTracker:
                 "total": total_cost
             }
         }
-        
+
         # Update usage totals
         self.usage_log["total_tokens"]["input"] += input_tokens
         self.usage_log["total_tokens"]["output"] += output_tokens
         self.usage_log["total_cost"] += total_cost
         self.usage_log["requests"].append(log_entry)
-        
+
         # Save updated log
         self._save_usage_log()
-        
+
         return {
             "tokens": input_tokens + output_tokens,
             "cost": total_cost
         }
-    
+
     def get_usage_summary(self) -> Dict:
         """Get a summary of API usage and costs"""
-        total_requests = len(self.usage_log["requests"])
-        total_tokens = self.usage_log["total_tokens"]["input"] + self.usage_log["total_tokens"]["output"]
-        
+        total_requests = len(self.usage_log.get("requests", []))
+        total_input_tokens = self.usage_log.get("total_tokens", {}).get("input", 0)
+        total_output_tokens = self.usage_log.get("total_tokens", {}).get("output", 0)
+        total_tokens = total_input_tokens + total_output_tokens
+        total_cost = self.usage_log.get("total_cost", 0.0)
+
         # Get usage for the last 24 hours
         current_time = datetime.now()
         last_24h_requests = []
-        
-        for request in self.usage_log["requests"]:
-            request_time = datetime.fromisoformat(request["timestamp"])
-            time_diff = (current_time - request_time).total_seconds()
-            if time_diff <= 86400:  # 24 hours in seconds
-                last_24h_requests.append(request)
-        
-        last_24h_tokens = sum(r["tokens"]["total"] for r in last_24h_requests)
-        last_24h_cost = sum(r["cost"]["total"] for r in last_24h_requests)
-        
+        last_24h_cost = 0.0
+        last_24h_tokens = 0
+
+        for request in self.usage_log.get("requests", []):
+            try:
+                request_time = datetime.fromisoformat(request["timestamp"])
+                time_diff = (current_time - request_time).total_seconds()
+                if time_diff <= 86400:  # 24 hours in seconds
+                    last_24h_requests.append(request)
+                    last_24h_cost += request.get("cost", {}).get("total", 0.0)
+                    last_24h_tokens += request.get("tokens", {}).get("total", 0)
+            except (ValueError, TypeError) as e:
+                 logger.warning(f"Skipping invalid request log entry during summary: {e} - {request}")
+
+
         return {
             "total_requests": total_requests,
             "total_tokens": total_tokens,
-            "total_cost": self.usage_log["total_cost"],
+            "total_cost": total_cost,
             "last_24h": {
                 "requests": len(last_24h_requests),
                 "tokens": last_24h_tokens,
@@ -169,470 +187,417 @@ class UsageTracker:
 
 class YouTubeTranscriptChatbot:
     """Complete chatbot implementation with DeepSeek integration"""
-    
+
     def __init__(self):
+        if not DEEPSEEK_API_KEY:
+            raise ValueError("DEEPSEEK_API_KEY environment variable not set")
+        if not PINECONE_API_KEY:
+            raise ValueError("PINECONE_API_KEY environment variable not set")
+        if not OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY environment variable not set for embeddings")
+
         self.client = OpenAI(
             api_key=DEEPSEEK_API_KEY,
             base_url="https://api.deepseek.com/v1"
         )
         self.pc = Pinecone(api_key=PINECONE_API_KEY)
         self.embeddings = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
-        self.chat_history = []
+        # self.chat_history = [] # Removed, history will be passed per request
         self.max_retry_attempts = 3
         self.retry_delay = 2  # seconds
-        
+
         # Initialize usage tracking
         self.usage_tracker = UsageTracker()
-        
-        # Initialize cache
-        self.cache = {}
-        self.query_embedding_cache = {}  # Cache for query embeddings
+
+        # Initialize cache (Query embedding cache only for now)
+        # self.cache = {} # Full response cache disabled due to history complexity
+        self.query_embedding_cache = {}
         self.cache_ttl = 3600  # Cache TTL in seconds (1 hour)
-        self.cache_timestamps = {}  # When items were added to cache
-        
+        self.cache_timestamps = {}
+
         # Connect to the retriever
         self.retriever = self._initialize_retriever()
-        
+
         logger.info(f"Initialized {CHATBOT_NAME} with DeepSeek API")
-    
+
     def _initialize_retriever(self):
         """Set up connection to Pinecone vector database"""
         try:
             logger.info(f"Connecting to Pinecone index: {INDEX_NAME}")
-            
-            # Connect to existing Pinecone index
             vector_store = PineconeVectorStore(
                 index_name=INDEX_NAME,
                 embedding=self.embeddings,
-                text_key="text"
+                text_key="text" # Assuming 'text' field holds the content in Pinecone
             )
-            
-            # Create retriever with MMR
+            # Create retriever with MMR for diverse results
             retriever = vector_store.as_retriever(
                 search_type="mmr",
                 search_kwargs={
-                    "k": 6,
-                    "fetch_k": 15,
-                    "lambda_mult": 0.7
+                    "k": 6,         # Number of final documents to return
+                    "fetch_k": 15,  # Number of documents to fetch initially for MMR analysis
+                    "lambda_mult": 0.7 # Diversity parameter (0=max diversity, 1=max relevance)
                 }
             )
-            
+            logger.info(f"Successfully connected retriever to Pinecone index: {INDEX_NAME}")
             return retriever
-        
         except Exception as e:
-            logger.error(f"Error initializing retriever: {e}")
+            logger.error(f"Error initializing Pinecone retriever for index {INDEX_NAME}: {e}", exc_info=True)
             raise RuntimeError(f"Failed to connect to vector database: {e}")
-    
+
     async def get_embedding(self, text: str) -> List[float]:
         """Get embedding with retry logic"""
         for attempt in range(self.max_retry_attempts):
             try:
-                return self.embeddings.embed_query(text)
+                # Run synchronous embedding function in a separate thread
+                return await asyncio.to_thread(self.embeddings.embed_query, text)
             except Exception as e:
                 if attempt < self.max_retry_attempts - 1:
-                    wait_time = self.retry_delay * (2 ** attempt)  # Exponential backoff
+                    wait_time = self.retry_delay * (2 ** attempt)
                     logger.warning(f"Embedding error: {e}. Retrying in {wait_time}s...")
                     await asyncio.sleep(wait_time)
                 else:
-                    logger.error(f"Failed to generate embedding after {self.max_retry_attempts} attempts")
+                    logger.error(f"Failed to generate embedding after {self.max_retry_attempts} attempts: {e}", exc_info=True)
                     raise RuntimeError(f"Failed to generate embedding: {e}")
-    
+
     async def retrieve_context(self, query: str) -> List[Dict]:
         """Retrieve relevant context from vector store with caching"""
         try:
             # Check for normalized query to improve cache hits
             normalized_query = query.lower().strip()
             current_time = time.time()
-            
+
             # Clean expired cache entries
-            expired_keys = [k for k, t in self.cache_timestamps.items() 
+            expired_keys = [k for k, t in self.cache_timestamps.items()
                           if current_time - t > self.cache_ttl]
             for k in expired_keys:
                 if k in self.query_embedding_cache:
                     del self.query_embedding_cache[k]
                 if k in self.cache_timestamps:
                     del self.cache_timestamps[k]
-                    
-            # Use cached embedding if available
-            if normalized_query in self.query_embedding_cache:
-                logger.info(f"Using cached embedding for query: {normalized_query[:30]}...")
-                documents = self.retriever.get_relevant_documents(query)
+
+            # Use cached embedding if available (Note: This doesn't cache the retrieval itself)
+            # Retrieval caching is complex with MMR, so we only cache the query embedding step
+            if normalized_query not in self.query_embedding_cache:
+                 # Generate and cache embedding if not present
+                 # Run synchronous embedding in thread pool
+                 _ = await self.get_embedding(query) # We don't need the embedding itself here, just ensure it's generated
+                 self.query_embedding_cache[normalized_query] = True # Mark as generated
+                 self.cache_timestamps[normalized_query] = current_time
+                 logger.info(f"Generated and cached embedding for query: {normalized_query[:30]}...")
             else:
-                # Generate new embedding
-                documents = self.retriever.get_relevant_documents(query)
-                # Cache for future use
-                self.query_embedding_cache[normalized_query] = True
-                self.cache_timestamps[normalized_query] = current_time
-            
+                 logger.info(f"Using cached embedding status for query: {normalized_query[:30]}...")
+
+
+            # Perform retrieval using Langchain retriever in thread pool
+            documents = await asyncio.to_thread(self.retriever.get_relevant_documents, query)
+
             context_docs = []
             for doc in documents:
+                # Ensure metadata exists and has expected keys
+                metadata = doc.metadata or {}
                 context_docs.append({
-                    "content": doc.page_content,
-                    "metadata": doc.metadata
+                    "content": doc.page_content or "",
+                    "metadata": {
+                        "title": metadata.get("title", "Unknown Source"),
+                        "url": metadata.get("url", "#")
+                        # Add other relevant metadata fields if available
+                    }
                 })
-            
-            logger.info(f"Retrieved {len(context_docs)} context documents")
+
+            logger.info(f"Retrieved {len(context_docs)} context documents for query: {query[:50]}...")
             return context_docs
-        
+
         except Exception as e:
-            logger.error(f"Error retrieving context: {e}")
-            return []
-    
+            logger.error(f"Error retrieving context: {e}", exc_info=True)
+            return [] # Return empty list on error
+
     def optimize_context(self, context_docs: List[Dict], query: str) -> List[Dict]:
-        """Optimize context to reduce token usage"""
+        """Optimize context to reduce token usage (simple relevance scoring)."""
         if not context_docs:
             return []
-        
+
         # Estimate current token usage
         total_context_tokens = sum(
-            self.usage_tracker.estimate_tokens(doc["content"]) 
+            self.usage_tracker.estimate_tokens(doc.get("content", ""))
             for doc in context_docs
         )
-        
-        # If context is already small, return as is
-        if total_context_tokens < 2000:
+
+        # Target token count for context
+        target_tokens = 3000 # Adjust as needed based on model limits and desired performance
+
+        # If context is already reasonably small, return as is
+        if total_context_tokens < target_tokens * 1.2: # Allow slightly over target
             return context_docs
-        
-        # Simple relevance scoring - count word overlap
+
+        # Simple relevance scoring - count word overlap with query
         query_words = set(query.lower().split())
-        
-        # Score each document
+
         scored_docs = []
-        for doc in context_docs:
-            doc_words = set(doc["content"].lower().split())
+        for i, doc in enumerate(context_docs):
+            doc_content = doc.get("content", "").lower()
+            doc_words = set(doc_content.split())
             overlap = len(query_words.intersection(doc_words))
-            scored_docs.append((doc, overlap))
-        
-        # Sort by relevance score
+            # Add a small bonus for earlier retrieved docs (assuming retriever has some relevance ordering)
+            score = overlap + (len(context_docs) - i) * 0.1
+            scored_docs.append((doc, score))
+
+        # Sort by relevance score (descending)
         scored_docs.sort(key=lambda x: x[1], reverse=True)
-        
-        # Take the most relevant documents until we reach a reasonable token count
+
+        # Take the most relevant documents until we reach the target token count
         optimized_docs = []
         current_tokens = 0
-        target_tokens = 2000  # Reduced target for faster processing
-        
+
         for doc, score in scored_docs:
-            doc_tokens = self.usage_tracker.estimate_tokens(doc["content"])
-            
+            doc_content = doc.get("content", "")
+            doc_tokens = self.usage_tracker.estimate_tokens(doc_content)
+
             if current_tokens + doc_tokens <= target_tokens:
                 optimized_docs.append(doc)
                 current_tokens += doc_tokens
             else:
-                # If we're not at 50% capacity yet, add a truncated version
+                # Optional: Add a truncated version if still far below target
                 if current_tokens < target_tokens * 0.5:
-                    truncated_content = doc["content"][:500] + "..."  # Simple truncation
-                    truncated_doc = {**doc}
-                    truncated_doc["content"] = truncated_content
+                    remaining_tokens = target_tokens - current_tokens
+                    # Estimate chars per token (very rough)
+                    chars_per_token = 4
+                    estimated_chars = int(remaining_tokens * chars_per_token) # Ensure int
+                    truncated_content = doc_content[:estimated_chars] + "..."
+                    truncated_doc = {**doc, "content": truncated_content}
                     optimized_docs.append(truncated_doc)
-                break
-        
-        logger.info(f"Optimized context from {len(context_docs)} to {len(optimized_docs)} documents")
+                    current_tokens += self.usage_tracker.estimate_tokens(truncated_content)
+                break # Stop adding docs once target is reached or exceeded
+
+        logger.info(f"Optimized context from {len(context_docs)} to {len(optimized_docs)} documents ({current_tokens} tokens)")
         return optimized_docs
-    
-    def check_cache(self, query: str) -> Optional[str]:
-        """Check if we have a cached response for this query"""
-        # Normalize query for cache lookup
-        normalized_query = query.lower().strip()
-        
-        if normalized_query in self.cache:
-            logger.info("Cache hit - returning cached response")
-            return self.cache[normalized_query]
-        
-        return None
-    
-    def update_cache(self, query: str, response: str):
-        """Update the cache with a new response"""
-        # Normalize query for cache storage
-        normalized_query = query.lower().strip()
-        
-        # Store in cache
-        self.cache[normalized_query] = response
-        self.cache_timestamps[normalized_query] = time.time()
-        
-        # Limit cache size to prevent memory issues
-        if len(self.cache) > 1000:
-            # Remove oldest entry (simple approach)
-            oldest_key = min(self.cache_timestamps.items(), key=lambda x: x[1])[0]
-            if oldest_key in self.cache:
-                del self.cache[oldest_key]
-            if oldest_key in self.cache_timestamps:
-                del self.cache_timestamps[oldest_key]
-    
+
+    # Caching is disabled for now due to history complexity
+    # def check_cache(self, query: str) -> Optional[str]: ...
+    # def update_cache(self, query: str, response: str): ...
+
     def select_model(self, query: str, context_length: int) -> str:
         """Select the appropriate model based on query and budget"""
-        # Check if we're approaching the budget limit
         usage = self.usage_tracker.get_usage_summary()
-        
-        if usage["last_24h"]["cost"] > DAILY_BUDGET * 0.8:
-            # If at 80% of budget, use the more economical model
-            logger.info("Near budget limit - using standard model")
+
+        if usage["last_24h"]["cost"] > DAILY_BUDGET * 0.9: # Check if near 90% budget
+            logger.warning("Near daily budget limit - using most economical model (deepseek-chat)")
             return "deepseek-chat"
-        
-        # Analyze query complexity
+
+        # Analyze query complexity (simple keyword check)
         complexity_indicators = [
-            "why", "how", "explain", "analyze", "compare", 
-            "difference", "recommend", "best", "worst"
+            "why", "how", "explain", "analyze", "compare",
+            "difference", "recommend", "best", "worst", "summarize"
         ]
-        
-        # Check for complexity indicators in the query
         complex_query = any(indicator in query.lower() for indicator in complexity_indicators)
-        
-        # If query is complex and context is large, use the reasoning model
-        if complex_query and context_length > 1000:
-            logger.info("Using reasoning model for complex query")
+
+        # Use reasoning model for complex queries or very large contexts
+        # Adjust threshold as needed
+        if complex_query or context_length > 4000:
+            logger.info("Using reasoning model (deepseek-reasoner) for complex query or large context")
             return "deepseek-reasoner"
-        
-        # Default to the standard model
+
+        # Default to the standard chat model
         return "deepseek-chat"
-    
-    async def get_streaming_response_with_timeout(self, 
-                                               query: str,
-                                               callback: Optional[Callable[[str], None]] = None,
-                                               timeout_seconds: int = 90) -> str:
-        """Get a streaming response with a timeout to prevent server hanging"""
-        try:
-            # Start timing
-            start_time = time.time()
-            logger.info(f"Starting response generation with {timeout_seconds}s timeout")
-            
-            # Create a task for the original function
-            response_task = asyncio.create_task(
-                self.get_streaming_response(query, callback)
-            )
-            
-            # Wait for the response with a timeout
-            response = await asyncio.wait_for(response_task, timeout=timeout_seconds)
-            
-            # Log completion time
-            elapsed = time.time() - start_time
-            logger.info(f"Response generated in {elapsed:.2f} seconds")
-            
-            return response
-            
-        except asyncio.TimeoutError:
-            # Handle timeout gracefully
-            logger.warning(f"Response timed out after {timeout_seconds} seconds")
-            return "I'm sorry, but it took too long to generate a response. Could you try a simpler question or try again later?"
-            
-        except Exception as e:
-            logger.error(f"Error in get_streaming_response_with_timeout: {str(e)}")
-            return f"I encountered an error while generating a response: {str(e)}"
-    
-    async def get_streaming_response(self, 
-                                query: str, 
-                                callback: Optional[Callable[[str], None]] = None) -> str:
-        """Get a streaming response from DeepSeek API with improved history handling"""
-        # Check cache first
-        cached_response = self.check_cache(query)
-        if cached_response:
-            if callback:
-                callback(cached_response)
-            return cached_response
-        
-        # Retrieve context
+
+    async def get_streaming_response(self,
+                                 query: str,
+                                 history: List[Dict[str, str]] = [], # History passed from caller
+                                 callback: Optional[Callable[[Any], None]] = None) -> str:
+        """
+        Get a streaming response from DeepSeek API, incorporating chat history.
+        The callback function will receive chunks of the response content.
+        Returns the full, raw response content string.
+        """
+        # 1. Retrieve context
         context_docs = await self.retrieve_context(query)
-        
         if not context_docs:
-            return "I'm having trouble retrieving information from my knowledge base. Please try again."
-        
-        # Optimize context to reduce token usage
+            # Handle case where no context is found - maybe a direct response?
+            logger.warning(f"No context retrieved for query: {query[:50]}...")
+            # For now, return a specific message, could try direct LLM call later
+            no_context_message = "I couldn't find specific information about that in the knowledge base."
+            if callback:
+                callback(no_context_message)
+            return no_context_message # Return immediately
+
+        # 2. Optimize context
         optimized_context = self.optimize_context(context_docs, query)
-        
-        # Format context for the prompt
+
+        # 3. Format prompt with system message, history, and context
         context_text = "\n\n".join([
-            f"From {doc['metadata']['title']}:\n{doc['content']}" 
+            # Include source URL in context text if available
+            f"Source: {doc['metadata'].get('url', 'N/A')}\nContent: {doc.get('content', '')}"
             for doc in optimized_context
         ])
-        
-        # Format chat history - FIXED FOR DEEPSEEK REASONER COMPATIBILITY
-        messages = []
-        
-        # System message always goes first
-        system_message = f"""
-        You are an AI assistant specialized in {CREATOR_NAME}'s fitness and bodybuilding knowledge. 
-        Answer the question based ONLY on the following context:
-        
-        {context_text}
-        
-        If you don't know the answer based on the context, just say "I don't have enough information about that in my knowledge base." Don't make up answers.
-        """
-        
-        messages.append({"role": "system", "content": system_message})
-        
-        # Add chat history in proper alternating format
-        if self.chat_history:
-            # Process history in pairs
-            for i in range(0, len(self.chat_history) - 1, 2):
-                if i+1 < len(self.chat_history):
-                    user_msg = self.chat_history[i]
-                    assistant_msg = self.chat_history[i+1]
-                    
-                    # Add as properly formatted messages
-                    messages.append({"role": "user", "content": user_msg})
-                    messages.append({"role": "assistant", "content": assistant_msg})
-        
-        # Add current query - but only if it's not already the last user message
-        if not self.chat_history or self.chat_history[-1] != query:
-            messages.append({"role": "user", "content": query})
-        
-        # All text combined for token estimation
-        all_text = system_message + query
-        estimated_input_tokens = self.usage_tracker.estimate_tokens(all_text)
-        
-        # Check daily budget
+
+        # Load system prompt from file
+        try:
+            with open("config/system_prompt.txt", "r", encoding="utf-8") as f:
+                prompt_template = f.read()
+            system_message = prompt_template.format(CREATOR_NAME=CREATOR_NAME, context_text=context_text)
+        except FileNotFoundError:
+            logger.error("System prompt file 'config/system_prompt.txt' not found. Using default.")
+            # Fallback default prompt (consider making this more robust)
+            system_message = f"You are a helpful AI assistant for {CREATOR_NAME}. Answer based on the context:\nContext:\n---\n{context_text}\n---"
+        except KeyError as e:
+             logger.error(f"Missing placeholder {e} in system prompt template. Using default.")
+             system_message = f"You are a helpful AI assistant for {CREATOR_NAME}. Answer based on the context:\nContext:\n---\n{context_text}\n---"
+
+        messages = [{"role": "system", "content": system_message}]
+
+        # Add chat history (passed as argument)
+        if history:
+             # Limit history length (e.g., last 5 exchanges = 10 messages)
+             max_history_messages = 10
+             limited_history = history[-max_history_messages:]
+             # Ensure format is correct before extending
+             formatted_history = [{"role": msg.get("role"), "content": msg.get("content")}
+                                  for msg in limited_history if msg.get("role") and msg.get("content")]
+             messages.extend(formatted_history)
+
+        # Add current query as the last user message
+        messages.append({"role": "user", "content": query})
+
+        # 4. Estimate tokens and check budget
+        all_text_for_estimation = system_message + " ".join([msg["content"] for msg in messages if msg.get("role") != "system"])
+        estimated_input_tokens = self.usage_tracker.estimate_tokens(all_text_for_estimation)
+        logger.info(f"Estimated input tokens: {estimated_input_tokens}")
+
         usage = self.usage_tracker.get_usage_summary()
         if usage["last_24h"]["cost"] > DAILY_BUDGET:
             logger.warning("Daily budget exceeded - returning error message")
-            return "I've reached my daily usage limit. Please try again tomorrow."
-        
+            budget_exceeded_msg = "I've reached my daily usage limit. Please try again tomorrow."
+            if callback:
+                 callback(budget_exceeded_msg)
+            return budget_exceeded_msg # Return immediately
+
+        # 5. Select model and make API call
         try:
-            # Select model based on query complexity and budget
-            model = self.select_model(query, len(context_text))
-            
-            # Make API call with streaming enabled
+            model = self.select_model(query, len(context_text)) # Use context_text length for selection heuristic
+            logger.info(f"Using model: {model}")
+
+            # Run synchronous SDK call in thread pool
             response_stream = await asyncio.to_thread(
                 lambda: self.client.chat.completions.create(
                     model=model,
                     messages=messages,
-                    temperature=0.3,
-                    max_tokens=2000,  # Increased from 800 to allow longer responses
+                    temperature=0.3, # Lower temperature for more factual responses
+                    max_tokens=1500, # Adjust based on expected response length vs cost
                     stream=True
                 )
             )
-            
-            # Process the streaming response
+
             full_response = ""
-            for chunk in response_stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    full_response += content
-                    
-                    # Call the callback if provided
+            usage_info = {}
+
+            # 6. Process the stream
+            # Note: Iterating over the sync stream iterator directly might block.
+            # Consider wrapping the iteration in asyncio.to_thread if issues arise.
+            for chunk in response_stream: # This might block if client doesn't handle async iteration well
+                # Check for content
+                content_chunk = chunk.choices[0].delta.content if chunk.choices else None
+                if content_chunk:
+                    full_response += content_chunk
                     if callback:
-                        callback(content)
-            
-            # Log the request
-            self.usage_tracker.log_request(
+                        callback(content_chunk) # Stream raw content chunk
+
+                # Check for usage data (might only appear in the last chunk)
+                if hasattr(chunk, 'usage') and chunk.usage:
+                     usage_info = {
+                         "input": chunk.usage.prompt_tokens,
+                         "output": chunk.usage.completion_tokens
+                     }
+
+            # 7. Log request
+            request_log = self.usage_tracker.log_request(
                 model=model,
-                input_text=all_text,
+                input_text=all_text_for_estimation, # Use estimated text
                 output_text=full_response,
-                actual_token_counts=None  # Will use estimates since we're streaming
+                actual_token_counts=usage_info if usage_info else None
             )
-            
-            # Format with source citations
-            formatted_response = self.format_response_with_citations(full_response, optimized_context)
-            
-            # Add to chat history - we add both the query and response
-            self.chat_history.append(query)
-            self.chat_history.append(formatted_response)
-            
-            # Limit history length to prevent context window issues
-            if len(self.chat_history) > 10:  # Keep last 5 exchanges
-                self.chat_history = self.chat_history[-10:]
-            
-            # Cache the response
-            self.update_cache(query, formatted_response)
-            
-            return formatted_response
-            
+            logger.info(f"Logged request: {request_log['tokens']} tokens, cost ${request_log['cost']:.6f}")
+
+            # 8. Return the raw, complete response string
+            # Citation formatting and saving is handled by the caller (app.py)
+            return full_response
+
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error in DeepSeek API call: {error_msg}")
-            
-            if "rate limit" in error_msg.lower():
-                return "I'm receiving too many requests right now. Please try again in a moment."
-            elif "context length" in error_msg.lower():
-                return "Your question and context are too long for me to process. Could you ask a shorter question?"
-            else:
-                return f"I encountered an error processing your request: {error_msg}"
-            
-    def format_response_with_citations(self, response: str, context_docs: List[Dict]) -> str:
-        """Add source citations to the response"""
-        if not context_docs:
-            return response
-        
-        citations = "\n\nSources:"
-        seen_titles = set()
-        
-        for doc in context_docs[:3]:  # Limit to first 3 sources
-            title = doc['metadata'].get('title', 'Unknown Video')
-            url = doc['metadata'].get('url', '')
-            
-            # Skip duplicates
-            if title in seen_titles:
-                continue
-            seen_titles.add(title)
-            
-            citations += f"\n- [{title}]({url})"
-        
-        return response + citations
-    
-    def clear_history(self):
-        """Clear chat history"""
-        self.chat_history = []
-        logger.info("Chat history cleared")
-    
+            logger.error(f"Error during DeepSeek API call: {e}", exc_info=True)
+            # Propagate error so the calling endpoint can handle it
+            raise e # Re-raise the exception
+
+    # Removed format_response_with_citations - caller handles source parsing/saving
+    # def format_response_with_citations(...)
+
+    # Removed clear_history as history is managed per session externally
+
     def get_usage_report(self):
         """Get a usage report"""
-        usage = self.usage_tracker.get_usage_summary()
-        
+        summary = self.usage_tracker.get_usage_summary()
         report = f"""
-        Usage Report:
-        
-        Total Requests: {usage['total_requests']}
-        Total Tokens: {usage['total_tokens']:,}
-        Total Cost: ${usage['total_cost']:.4f}
-        
-        Last 24 Hours:
-        - Requests: {usage['last_24h']['requests']}
-        - Tokens: {usage['last_24h']['tokens']:,}
-        - Cost: ${usage['last_24h']['cost']:.4f}
-        
-        Daily Budget: ${DAILY_BUDGET:.2f}
-        Remaining Budget: ${max(0, DAILY_BUDGET - usage['last_24h']['cost']):.2f}
-        """
-        
+Usage Report ({datetime.now().isoformat()}):
+-----------------------------------------
+Total Requests: {summary['total_requests']}
+Total Tokens:   {summary['total_tokens']}
+Total Cost:     ${summary['total_cost']:.4f}
+
+Last 24 Hours:
+  Requests: {summary['last_24h']['requests']}
+  Tokens:   {summary['last_24h']['tokens']}
+  Cost:     ${summary['last_24h']['cost']:.4f}
+  Budget Remaining: ${max(0, DAILY_BUDGET - summary['last_24h']['cost']):.4f}
+-----------------------------------------
+"""
         return report
 
 
-# Simple terminal-based streaming chat interface
+# Example for direct testing (optional)
 async def terminal_chat():
+    print(f"Starting {CHATBOT_NAME} terminal chat...")
     chatbot = YouTubeTranscriptChatbot()
-    print(f"\n{CHATBOT_NAME} is ready!")
-    print("Commands:")
-    print("- Type 'exit' to end the conversation")
-    print("- Type 'clear' to reset chat history")
-    print("- Type 'usage' to see API usage stats")
-    
+    session_history = [] # Simple list of dicts for terminal example
+
     while True:
-        user_input = input("\nYou: ")
-        
-        if user_input.lower() in ["exit", "quit"]:
-            print("Thank you for using the chatbot!")
+        try:
+            query = await asyncio.to_thread(input, "You: ") # Run input in thread
+        except EOFError:
+            break # Handle Ctrl+D
+
+        if query.lower() in ["quit", "exit"]:
             break
-        
-        if user_input.lower() == "clear":
-            chatbot.clear_history()
-            print("Chat history cleared.")
-            continue
-        
-        if user_input.lower() == "usage":
+        if query.lower() == "/usage":
             print(chatbot.get_usage_report())
             continue
-        
-        if not user_input.strip():
-            continue
-        
-        print(f"\n{CHATBOT_NAME}: ", end="", flush=True)
-        
-        # Define callback to print response chunks as they arrive
-        def print_chunk(chunk):
-            print(chunk, end="", flush=True)
-        
-        # Get streaming response with timeout protection
-        await chatbot.get_streaming_response_with_timeout(user_input, print_chunk)
-        print()  # Add newline after response
 
+        print("Assistant: ", end="", flush=True)
+        full_res = ""
+        try:
+            # Define a simple callback for terminal printing
+            def print_chunk(chunk):
+                print(chunk, end="", flush=True)
+
+            # Call the main streaming function with history
+            full_res = await chatbot.get_streaming_response(query, session_history, print_chunk)
+            print() # Newline after streaming finishes
+
+            # Update terminal history
+            session_history.append({"role": "user", "content": query})
+            # Basic parsing to remove potential source string before adding to history
+            response_parts = full_res.split("(Source:")
+            clean_response = response_parts[0].strip()
+            session_history.append({"role": "assistant", "content": clean_response})
+
+            # Limit history
+            if len(session_history) > 10:
+                session_history = session_history[-10:]
+
+        except Exception as e:
+            print(f"\nError: {e}")
+
+    print("\nExiting chat.")
 
 if __name__ == "__main__":
-    asyncio.run(terminal_chat())
+    # Run the terminal chat example
+    try:
+        asyncio.run(terminal_chat())
+    except KeyboardInterrupt:
+        print("\nExiting...")

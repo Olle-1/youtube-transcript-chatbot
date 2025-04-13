@@ -4,14 +4,26 @@ import asyncio
 import re
 import time
 import logging
-from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi import FastAPI, Request, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+# from fastapi.templating import Jinja2Templates # Will add back when serving frontend
 from pydantic import BaseModel
 from typing import Optional, List, Dict
+from datetime import timedelta
 from dotenv import load_dotenv
+from sqlalchemy.ext.asyncio import AsyncSession
+
+# --- Database, Schemas, CRUD, Auth ---
+from models.db_models import get_db # Import DB session dependency
+import schemas.user_schemas as user_schemas
+import schemas.chat_schemas as chat_schemas # Added
+import crud.user_crud as user_crud
+import crud.chat_crud as chat_crud # Added
+import auth.utils as auth_utils
+from auth.dependencies import get_current_user
 
 # Import chatbot
 from chatbot import YouTubeTranscriptChatbot
@@ -69,15 +81,18 @@ async def log_requests(request: Request, call_next):
         logger.error(f"[{request_id}] Error processing request: {str(e)}")
         raise
 
-# Request models
+# --- Request/Response Models (Existing) ---
 class ChatRequest(BaseModel):
     query: str
-    session_id: Optional[str] = None
+    session_id: Optional[int] = None # Changed to int, matches DB session ID
 
-# Response models
 class ChatResponse(BaseModel):
     response: str
     sources: List[Dict[str, str]] = []
+
+# --- OAuth2 Scheme ---
+# Points to the login endpoint
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 # In-memory chatbot instance
 chatbot_instance = YouTubeTranscriptChatbot()
@@ -90,9 +105,23 @@ def get_chatbot(creator_id: str = "mountaindog1"):
     return chatbot_instance
 
 # Root endpoint
-@app.get("/")
-async def api_root():
-    return {"status": "online", "message": "YouTube Creator Chatbot API"}
+# Serve frontend index.html
+@app.get("/", response_class=HTMLResponse)
+async def read_index():
+    # Check if file exists to avoid errors if frontend isn't built/present
+    index_path = "frontend/index.html"
+    if not os.path.exists(index_path):
+         return HTMLResponse(content="<h1>Backend Running</h1><p>Frontend not found at ./frontend/index.html</p>", status_code=404)
+    return FileResponse(index_path)
+
+# Serve static files (CSS, JS) from the frontend directory
+# Mount this *after* the root endpoint to avoid conflicts
+app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
+# API Root (Optional - can be removed if / serves the frontend)
+# @app.get("/api")
+# async def api_root():
+#     return {"status": "online", "message": "YouTube Creator Chatbot API"}
 
 # Health check endpoint
 @app.get("/health")
@@ -100,108 +129,227 @@ async def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
 
-# Standard chat endpoint
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    """Standard chat endpoint with full response and timeout handling"""
-    chatbot = get_chatbot()
-    
-    try:
-        # Log the start of processing
-        logger.info(f"Starting chat processing for query: {request.query[:50]}...")
-        start_time = time.time()
-        
-        # Set a timeout for the AI response
-        try:
-            async with asyncio.timeout(90):  # 90 second timeout
-                response = await chatbot.get_streaming_response(request.query)
-                
-            # Log successful completion and timing
-            elapsed = time.time() - start_time
-            logger.info(f"Chat processing completed in {elapsed:.2f} seconds")
-            
-        except asyncio.TimeoutError:
-            logger.warning(f"Response generation timed out after 90s for query: {request.query[:100]}...")
-            return {
-                "response": "I'm sorry, but it's taking me longer than expected to generate a response. Please try asking a simpler question or try again later.",
-                "sources": []
-            }
-        
-        # Extract sources from response if present
-        sources = []
-        response_parts = response.split("Sources:")
-        if len(response_parts) > 1:
-            main_response = response_parts[0].strip()
-            sources_text = response_parts[1].strip()
-            
-            # Parse markdown links
-            link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'
-            matches = re.findall(link_pattern, sources_text)
-            
-            for title, url in matches:
-                sources.append({"title": title, "url": url})
-        else:
-            main_response = response
-        
-        return {
-            "response": main_response,
-            "sources": sources
-        }
-    
-    except Exception as e:
-        # Log the full error with context
-        logger.error(f"Error in chat endpoint: {str(e)}", exc_info=True)
-        
-        # Return a helpful error message
-        return {
-            "response": f"I encountered an error processing your request. Please try again or ask a different question. Error details: {str(e)}",
-            "sources": []
-        }
+
+# --- Authentication Endpoints ---
+
+@app.post("/auth/register", response_model=user_schemas.User, status_code=status.HTTP_201_CREATED)
+async def register_user(user: user_schemas.UserCreate, db: AsyncSession = Depends(get_db)):
+    """Registers a new user."""
+    db_user = await user_crud.get_user_by_email(db, email=user.email)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    created_user = await user_crud.create_user(db=db, user=user)
+    return created_user
+
+@app.post("/auth/login", response_model=user_schemas.Token)
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)
+):
+    """Logs in a user and returns a JWT access token."""
+    user = await user_crud.get_user_by_email(db, email=form_data.username) # username is email here
+    if not user or not auth_utils.verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=auth_utils.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = auth_utils.create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/users/me", response_model=user_schemas.User)
+async def read_users_me(current_user: user_schemas.User = Depends(get_current_user)):
+    """Fetches the profile of the currently authenticated user."""
+    return current_user
+
+
+# --- Profile Settings Endpoints ---
+
+@app.get("/profile/settings", response_model=user_schemas.UserUpdateProfile)
+async def get_profile_settings(
+    current_user: user_schemas.User = Depends(get_current_user)
+):
+    """Retrieves the current user's profile settings."""
+    # The current_user object already has profile_settings loaded
+    return {"profile_settings": current_user.profile_settings or {}}
+
+@app.put("/profile/settings", response_model=user_schemas.User)
+async def update_profile_settings(
+    settings_update: user_schemas.UserUpdateProfile,
+    db: AsyncSession = Depends(get_db),
+    current_user: user_schemas.User = Depends(get_current_user)
+):
+    """Updates the current user's profile settings."""
+    updated_user = await user_crud.update_user_profile_settings(
+        db=db, user_id=current_user.id, settings_data=settings_update.profile_settings
+    )
+    if not updated_user:
+        # This shouldn't happen if get_current_user worked, but handle defensively
+        raise HTTPException(status_code=404, detail="User not found")
+    return updated_user
+
+
+# --- Chat Endpoints (Now Secured) ---
+
+# --- Chat History Endpoints ---
+
+@app.get("/chat/sessions", response_model=List[chat_schemas.ChatSession])
+async def get_sessions(
+    db: AsyncSession = Depends(get_db),
+    current_user: user_schemas.User = Depends(get_current_user)
+):
+    """Retrieves all chat sessions for the current user."""
+    sessions = await chat_crud.get_user_chat_sessions(db=db, user_id=current_user.id)
+    return sessions
+
+@app.get("/chat/sessions/{session_id}/messages", response_model=List[chat_schemas.ChatMessage])
+async def get_session_messages(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: user_schemas.User = Depends(get_current_user)
+):
+    """Retrieves all messages for a specific chat session."""
+    # get_chat_messages includes check for user ownership
+    messages = await chat_crud.get_chat_messages(db=db, session_id=session_id, user_id=current_user.id)
+    if not messages and not await chat_crud.get_chat_session(db, session_id, current_user.id):
+         # If messages is empty AND session doesn't exist/belong to user, raise 404
+         raise HTTPException(status_code=404, detail="Chat session not found or access denied")
+    return messages
+
+
+# --- Chat Processing Endpoints ---
+
+# Standard chat endpoint (Commented out for now - focus on streaming)
+# @app.post("/chat", response_model=ChatResponse)
+# async def chat(
+#     request: ChatRequest,
+#     db: AsyncSession = Depends(get_db), # Added db
+#     current_user: user_schemas.User = Depends(get_current_user)
+# ):
+#     """Standard chat endpoint - Needs update for history"""
+#     # TODO: Implement session handling and message saving similar to chat_stream
+#     chatbot = get_chatbot()
+#     logger.warning("Non-streaming /chat endpoint called - history not implemented yet.")
+#     try:
+#         async with asyncio.timeout(90):
+#             response = await chatbot.get_streaming_response(request.query) # Needs history arg
+#         # ... (rest of parsing logic) ...
+#         # TODO: Save user query and assistant response to DB
+#         return { ... }
+#     except Exception as e:
+#         # ... (error handling) ...
+#         return { ... }
 
 # Streaming chat endpoint
 @app.get("/chat/stream")  # Add GET support for EventSource
 @app.post("/chat/stream") # Keep POST for API clients
 async def chat_stream(
-    request: ChatRequest = None,  # For POST requests with JSON body
-    query: str = None,            # For GET requests with query params
-    session_id: str = None        # For GET requests with query params
+    # Use POST with body for consistency now
+    request: ChatRequest, # Removed default None, now required in body
+    db: AsyncSession = Depends(get_db), # Added db dependency
+    current_user: user_schemas.User = Depends(get_current_user)
 ):
-    """Streaming chat endpoint for real-time responses - supports both GET and POST"""
-    # If this is a GET request, parameters will be in the query string
-    if request is None and query:
-        request = ChatRequest(query=query, session_id=session_id or "default")
-    
-    # If we still don't have a valid request, return an error
-    if request is None or not request.query:
-        raise HTTPException(
-            status_code=400, 
-            detail="Missing required parameters. Please provide 'query' parameter."
-        )
-    
+    """
+    Streaming chat endpoint for real-time responses.
+    Handles chat session creation/retrieval and message persistence.
+    """
     chatbot = get_chatbot()
+    session_id = request.session_id
+    history = []
+
+    # 1. Get or Create Chat Session & Load History
+    if session_id:
+        chat_session = await chat_crud.get_chat_session(db, session_id, current_user.id)
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="Chat session not found or access denied")
+        history_models = await chat_crud.get_chat_messages(db, session_id, current_user.id)
+        # Convert history models to simple dict format expected by chatbot (adjust if needed)
+        history = [{"role": msg.role, "content": msg.content} for msg in history_models]
+    else:
+        # Create a new session (consider generating a title later, e.g., from first query)
+        chat_session = await chat_crud.create_chat_session(db, user_id=current_user.id)
+        session_id = chat_session.id # Use the newly created session ID
+
+    # 2. Save User Query
+    await chat_crud.add_chat_message(
+        db=db, session_id=session_id, role="user", content=request.query
+    )
+    
+    # 3. Prepare and run streaming generation
     
     async def generate():
         queue = asyncio.Queue()
         completed = False
         
-        def handle_chunk(chunk):
-            queue.put_nowait({"type": "chunk", "content": chunk})
+        full_response_content = ""
+        sources_list = [] # To store parsed sources
+
+        # Modified callback to accumulate response and parse sources
+        def handle_chunk(chunk_data):
+            nonlocal full_response_content, sources_list
+            # Assuming chunk_data might be dict with 'content' and maybe 'sources' later
+            # For now, assume it's just the text chunk
+            content_chunk = ""
+            if isinstance(chunk_data, str):
+                 content_chunk = chunk_data
+            elif isinstance(chunk_data, dict) and "content" in chunk_data:
+                 content_chunk = chunk_data["content"]
+                 # TODO: Potentially parse sources if chatbot sends them structured in chunks
+
+            if content_chunk:
+                 full_response_content += content_chunk
+                 queue.put_nowait({"type": "chunk", "content": content_chunk})
         
         async def process():
             nonlocal completed
             try:
                 # Set a timeout for AI response
                 async with asyncio.timeout(120):  # 2 minute timeout
-                    await chatbot.get_streaming_response(request.query, handle_chunk)
+                    # TODO: Modify get_streaming_response to accept history
+                    # await chatbot.get_streaming_response(request.query, history, handle_chunk)
+                    # --- Placeholder until chatbot is modified ---
+                    # Pass the loaded history to the chatbot
+                    await chatbot.get_streaming_response(request.query, history, handle_chunk)
             except asyncio.TimeoutError:
                 await queue.put({"type": "error", "content": "Response generation timed out. Please try a simpler question."})
             except Exception as e:
                 logger.error(f"Error in streaming response: {str(e)}")
                 await queue.put({"type": "error", "content": f"Error: {str(e)}"})
             finally:
-                # Always signal completion
-                await queue.put({"type": "done"})
                 completed = True
+                # 4. Save Assistant Response (after stream finishes or errors)
+                try:
+                    # Basic source parsing from the full response (similar to non-streaming endpoint)
+                    response_parts = full_response_content.split("Sources:")
+                    final_content = response_parts[0].strip() if response_parts else full_response_content.strip()
+                    if len(response_parts) > 1:
+                        sources_text = response_parts[1].strip()
+                        link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'
+                        matches = re.findall(link_pattern, sources_text)
+                        sources_list = [{"title": title, "url": url} for title, url in matches]
+
+                    if final_content: # Only save if there was some response content
+                         await chat_crud.add_chat_message(
+                              db=db,
+                              session_id=session_id,
+                              role="assistant",
+                              content=final_content, # Save content without "Sources:" part
+                              sources=sources_list if sources_list else None
+                         )
+                         logger.info(f"Saved assistant response for session {session_id}")
+                    else:
+                         logger.warning(f"No assistant response content generated for session {session_id}, not saving.")
+
+                    # Send final "done" signal with session_id
+                    await queue.put({"type": "done", "session_id": session_id})
+
+                except Exception as db_err:
+                     logger.error(f"Failed to save assistant message for session {session_id}: {db_err}", exc_info=True)
+                     # Still send done signal, but maybe log error to client?
+                     await queue.put({"type": "error", "content": f"Error saving chat message: {db_err}"})
+                     await queue.put({"type": "done", "session_id": session_id}) # Ensure stream terminates
         
         # Start the processing task
         task = asyncio.create_task(process())
@@ -214,8 +362,8 @@ async def chat_stream(
                     message = await asyncio.wait_for(queue.get(), timeout=1.0)
                     
                     if message["type"] == "done":
-                        # End of stream
-                        yield "event: done\ndata: {}\n\n"
+                        # End of stream - include session_id
+                        yield f"event: done\ndata: {json.dumps({'session_id': message.get('session_id', session_id)})}\n\n"
                         break
                     elif message["type"] == "error":
                         # Error message

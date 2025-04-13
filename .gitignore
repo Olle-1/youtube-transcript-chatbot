@@ -1,19 +1,35 @@
 # Environment variables
 .env
 
-# Python cache files
+# Python specific ignores
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
+*.pyo
+*.pyd
+*build/
+*dist/
+*.egg-info/
+venv/
+.venv/
+env/
+
+# Node.js/Frontend specific ignores
+node_modules/
+.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+# build/ # Covered by Python section
+# dist/ # Covered by Python section
 
 # Logs
 *.log
 
-# Local data
+# Local data (Existing - preserved)
 chunks/
 raw/
 processed/
 embeddings/
 
-# Usage tracking
+# Usage tracking (Existing - preserved)
 api_usage.json

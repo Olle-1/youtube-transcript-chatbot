@@ -1,14 +1,25 @@
 fastapi>=0.109.0,<0.110.0
+pydantic[email]>=2.0.0 # Added for EmailStr validation
 uvicorn>=0.25.0,<0.26.0
 python-dotenv>=1.0.0,<2.0.0
 openai>=1.10.0,<2.0.0
-tiktoken>=0.5.2,<0.6.0
+tiktoken>=0.5.2 # Broaden tiktoken upper bound
 tqdm>=4.66.1,<5.0.0
 python-multipart>=0.0.6,<0.1.0
 gunicorn>=21.2.0,<22.0.0
 pinecone-client>=2.2.4
-langchain>=0.0.350
-langchain-openai>=0.0.3
-langchain-pinecone>=0.1.1
+# Using more recent Langchain versions to resolve conflicts
+langchain>=0.1.0,<0.4.0 # Allow newer langchain, but cap before major potential breaks
+langchain-openai>=0.1.0,<0.4.0 # Allow newer langchain-openai
+langchain-pinecone>=0.1.0,<0.3.0 # Allow newer langchain-pinecone
 jinja2>=3.1.2,<4.0.0
 # Let FastAPI determine the correct starlette version
+
+# Database & Auth
+SQLAlchemy[asyncio]>=2.0.0,<3.0.0  # Added asyncio extra for async support
+# psycopg2-binary>=2.9.0,<3.0.0     # Replaced with asyncpg
+# asyncpg>=0.25.0,<0.30.0           # Replaced with psycopg
+psycopg[binary]>=3.1.0           # Async/Sync PostgreSQL driver (v3) - Broadened upper bound
+alembic>=1.13.0,<2.0.0            # Database migrations
+passlib[bcrypt]>=1.7.4,<2.0.0     # Password hashing
+python-jose[cryptography]>=3.3.0,<4.0.0 # JWT handling

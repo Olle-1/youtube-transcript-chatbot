@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiftingChat</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="auth-container">
+        <h2>Login / Register</h2>
+        <!-- Login Form -->
+        <form id="login-form">
+            <h3>Login</h3>
+            <input type="email" id="login-email" placeholder="Email" required>
+            <input type="password" id="login-password" placeholder="Password" required>
+            <button type="submit">Login</button>
+            <p id="login-error" class="error-message"></p>
+        </form>
+        <hr>
+        <!-- Registration Form -->
+        <form id="register-form">
+            <h3>Register</h3>
+            <input type="email" id="register-email" placeholder="Email" required>
+            <input type="password" id="register-password" placeholder="Password (min 8 chars)" required minlength="8">
+            <button type="submit">Register</button>
+            <p id="register-error" class="error-message"></p>
+            <p id="register-success" class="success-message"></p>
+        </form>
+    </div>
+
+    <div id="chat-container" style="display: none;">
+        <header>
+            <h1>LiftingChat</h1>
+            <div id="user-info">
+                Logged in as: <span id="user-email"></span>
+                <button id="logout-button">Logout</button>
+                <button id="settings-button">Settings</button> <!-- Added -->
+            </div>
+        </header>
+
+        <div id="chat-area">
+            <div id="sidebar">
+                <h3>Chat History</h3>
+                <ul id="session-list">
+                    <!-- Session list items will be added here -->
+                </ul>
+                <button id="new-chat-button">New Chat</button>
+            </div>
+            <div id="main-chat">
+                <div id="messages">
+                    <!-- Chat messages will appear here -->
+                     <div class="message assistant">Hello! Ask me anything about training, nutrition, or fitness!</div>
+                </div>
+                <div id="chat-input">
+                    <textarea id="message-input" placeholder="Type your message..." rows="3"></textarea>
+                    <button id="send-button">Send</button>
+                </div>
+                 <div id="sources-area">
+                     <h4>Sources:</h4>
+                     <ul id="sources-list"></ul>
+                 </div>
+            </div>
+        </div>
+    </div>
+
+     <!-- Profile Settings Modal (Hidden by default) -->
+     <div id="settings-modal" class="modal" style="display: none;">
+         <div class="modal-content">
+             <span class="close-button" id="close-settings-button">&times;</span>
+             <h2>Profile Settings</h2>
+             <form id="settings-form">
+                 <label for="setting-example">Example Setting:</label>
+                 <input type="text" id="setting-example" name="example">
+                 <!-- Add more settings fields as needed -->
+                 <button type="submit">Save Settings</button>
+                 <p id="settings-status"></p>
+             </form>
+         </div>
+     </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
