@@ -23,3 +23,4 @@ psycopg[binary]>=3.1.0           # Async/Sync PostgreSQL driver (v3) - Broadened
 alembic>=1.13.0,<2.0.0            # Database migrations
 passlib[bcrypt]>=1.7.4,<2.0.0     # Password hashing
 python-jose[cryptography]>=3.3.0,<4.0.0 # JWT handling
+psycopg2-binary>=2.9.0,<3.0.0
