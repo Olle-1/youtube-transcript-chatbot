@@ -510,6 +510,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     // --- Add Event Listeners ---
+    loginForm.addEventListener('submit', handleLogin);
+    registerForm.addEventListener('submit', handleRegister);
+    logoutButton.addEventListener('click', handleLogout); // Added logout listener
+
+    // Chat listeners
     sendButton.addEventListener('click', handleSendMessage);
     messageInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
