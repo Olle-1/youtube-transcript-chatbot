@@ -17,6 +17,7 @@ jinja2>=3.1.2,<4.0.0
 
 # Database & Auth
 SQLAlchemy[asyncio]>=2.0.0,<3.0.0  # Added asyncio extra for async support
+sqlalchemy-utils>=0.41.1 # Added for EncryptedType etc.
 # psycopg2-binary>=2.9.0,<3.0.0     # Replaced with asyncpg
 # asyncpg>=0.25.0,<0.30.0           # Replaced with psycopg
 psycopg[binary]>=3.1.0           # Async/Sync PostgreSQL driver (v3) - Broadened upper bound

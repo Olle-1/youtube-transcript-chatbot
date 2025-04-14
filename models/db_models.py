@@ -1,12 +1,15 @@
 # models/db_models.py
 import datetime
 from sqlalchemy import (
-    create_engine, Column, Integer, String, DateTime, ForeignKey, Text, JSON
+    create_engine as create_sync_engine, # Alias sync engine
+    Column, Integer, String, DateTime, ForeignKey, Text, JSON, Boolean
 )
-from sqlalchemy.orm import relationship, sessionmaker, declarative_base
+from sqlalchemy.orm import relationship, sessionmaker, declarative_base, Session as SyncSession # Import sync Session
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy_utils import EncryptedType # Added for encryption
 import os
 from dotenv import load_dotenv
+import uuid # Added for potential UUID generation if needed later
 
 load_dotenv()
 
@@ -14,12 +17,26 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable not set")
+# Load SECRET_KEY for encryption
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError("SECRET_KEY environment variable not set for encryption")
 
-# Use async engine for FastAPI
-engine = create_async_engine(DATABASE_URL, echo=True) # echo=True for debugging SQL
+# Use async engine for FastAPI - Note: EncryptedType might have issues with async,
+# but CRUD operations will likely use synchronous sessions for simplicity with middleware.
+# Let's keep the async engine for the main app but use sync sessions where needed.
+# Async Engine and Session for FastAPI endpoints
+async_engine = create_async_engine(DATABASE_URL, echo=False) # Renamed for clarity
 AsyncSessionLocal = sessionmaker(
-    bind=engine, class_=AsyncSession, expire_on_commit=False
+    bind=async_engine, class_=AsyncSession, expire_on_commit=False
 )
+
+# Sync Engine and Session for middleware, scripts, etc.
+# Note: DATABASE_URL might need adjustment if it uses an async driver prefix like 'postgresql+asyncpg://'
+# For sync usage, it should be like 'postgresql://'
+sync_db_url = DATABASE_URL.replace("+asyncpg", "") # Attempt to convert if asyncpg driver is used
+sync_engine = create_sync_engine(sync_db_url, echo=False)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=sync_engine)
 
 Base = declarative_base()
 
@@ -29,6 +46,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
+    is_superuser = Column(Boolean, default=False, nullable=False) # Added for admin check
     profile_settings = Column(JSON, nullable=True, default={}) # Store custom user info
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
@@ -58,15 +76,41 @@ class ChatMessage(Base):
 
     session = relationship("ChatSession", back_populates="messages")
 
+# --- Tenant Model ---
+class Tenant(Base):
+    __tablename__ = "tenants"
+
+    # Assuming tenant_id from JWT is a string (e.g., UUID)
+    id = Column(String, primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String, index=True, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    # Encrypt sensitive data like API keys
+    pinecone_api_key = Column(EncryptedType(String, SECRET_KEY), nullable=True)
+    pinecone_environment = Column(String, nullable=True)
+    system_prompt = Column(Text, nullable=True) # Tenant-specific system prompt
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
 # Helper function to get DB session (dependency for FastAPI)
+# Async DB session dependency for FastAPI endpoints
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
 
+# Sync DB session context manager (useful for scripts or middleware)
+def get_sync_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 # Function to create tables (useful for initial setup or testing)
 # We will use Alembic for proper migrations later
 async def create_tables():
-     async with engine.begin() as conn:
+     # Use sync engine for table creation if run manually
+     # Note: Alembic handles migrations in production
+     async with async_engine.begin() as conn: # Still use async engine here for consistency if run via main()
          await conn.run_sync(Base.metadata.create_all)
 
 if __name__ == "__main__":

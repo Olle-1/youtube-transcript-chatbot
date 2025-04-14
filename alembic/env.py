@@ -81,12 +81,12 @@ async def run_migrations_online() -> None:
     """
     # Use the async engine directly from db_models
     # Ensure DATABASE_URL is correctly loaded if not already
-    from models.db_models import engine
+    from models.db_models import async_engine # Corrected import
 
-    async with engine.connect() as connection:
+    async with async_engine.connect() as connection: # Use async_engine
         await connection.run_sync(do_run_migrations)
 
-    await engine.dispose()
+    await async_engine.dispose() # Use async_engine
 
 
 if context.is_offline_mode():

@@ -47,24 +47,25 @@ def initialize_retriever():
     
     return retriever
 
-def create_chain(retriever):
-    """Create the conversational chain."""
-    # Custom prompt - with creator name hardcoded to avoid input error
-    custom_template = """
-    You are an AI assistant specialized in MountainDog1's fitness and bodybuilding knowledge. 
-    Answer the question based ONLY on the following context:
-    
-    {context}
-    
-    If you don't know the answer based on the context, just say "I don't have enough information about that in my knowledge base." Don't make up answers.
-    
-    Chat History:
-    {chat_history}
-    
-    Question: {question}
-    
-    Answer:
-    """
+def create_chain(retriever, system_prompt: str):
+    """Create the conversational chain with a specific system prompt."""
+    # Use the provided system prompt
+    # Combine the dynamic system prompt with the rest of the template structure
+    custom_template = f"""{system_prompt}
+
+Answer the question based ONLY on the following context:
+
+{{context}}
+
+If you don't know the answer based on the context, just say "I don't have enough information about that in my knowledge base." Don't make up answers.
+
+Chat History:
+{{chat_history}}
+
+Question: {{question}}
+
+Answer:
+"""
     
     CUSTOM_PROMPT = PromptTemplate(
         input_variables=["context", "question", "chat_history"],
@@ -123,7 +124,10 @@ def chat_loop():
     """Run an interactive chat loop."""
     print(f"Initializing {CHATBOT_NAME}...")
     retriever = initialize_retriever()
-    chain = create_chain(retriever)
+    # TODO: This chat_loop is for standalone testing and needs updating
+    # or removal if only used via API. For now, provide a default prompt.
+    default_prompt = "You are a helpful AI assistant." # Placeholder default
+    chain = create_chain(retriever, default_prompt)
     
     print(f"\n{CHATBOT_NAME} is ready! Type 'exit' to end the conversation.")
     print("Ask any question about MountainDog1's training methods, programs, or advice.")

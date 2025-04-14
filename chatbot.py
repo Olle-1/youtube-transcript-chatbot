@@ -9,9 +9,12 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable
 from dotenv import load_dotenv
 from openai import OpenAI
-from langchain_pinecone import PineconeVectorStore
-from langchain_openai import OpenAIEmbeddings
-from pinecone import Pinecone
+# Removed PineconeVectorStore, OpenAIEmbeddings, Pinecone imports as they are handled by dependencies now
+# from langchain_pinecone import PineconeVectorStore
+# from langchain_openai import OpenAIEmbeddings
+# from pinecone import Pinecone
+from langchain.vectorstores.base import VectorStoreRetriever # Added for type hint
+from langchain_core.embeddings import Embeddings # Added for type hint
 
 # Configure logging
 logging.basicConfig(
@@ -30,10 +33,10 @@ load_dotenv()
 # API keys
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+# PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") # Removed, handled by tenant config
 
 # Constants
-INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "youtube-transcript-mountaindog1") # Use env var or default
+# INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "youtube-transcript-mountaindog1") # Removed, handled by tenant config
 CREATOR_NAME = os.getenv("CREATOR_NAME", "MountainDog1") # Use env var or default
 CHATBOT_NAME = f"{CREATOR_NAME} Assistant"
 DAILY_BUDGET = float(os.getenv("DAILY_BUDGET", 1.0)) # Use env var or default
@@ -191,17 +194,19 @@ class YouTubeTranscriptChatbot:
     def __init__(self):
         if not DEEPSEEK_API_KEY:
             raise ValueError("DEEPSEEK_API_KEY environment variable not set")
-        if not PINECONE_API_KEY:
-            raise ValueError("PINECONE_API_KEY environment variable not set")
-        if not OPENAI_API_KEY:
-            raise ValueError("OPENAI_API_KEY environment variable not set for embeddings")
+        # Removed PINECONE_API_KEY check, tenant config handles this
+        # Removed OPENAI_API_KEY check, dependency handles this
+        # if not PINECONE_API_KEY:
+        #     raise ValueError("PINECONE_API_KEY environment variable not set")
+        # if not OPENAI_API_KEY:
+        #     raise ValueError("OPENAI_API_KEY environment variable not set for embeddings")
 
         self.client = OpenAI(
             api_key=DEEPSEEK_API_KEY,
             base_url="https://api.deepseek.com/v1"
         )
-        self.pc = Pinecone(api_key=PINECONE_API_KEY)
-        self.embeddings = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
+        # self.pc = Pinecone(api_key=PINECONE_API_KEY) # Removed, use dependency
+        # self.embeddings = OpenAIEmbeddings(api_key=OPENAI_API_KEY) # Removed, use dependency
         # self.chat_history = [] # Removed, history will be passed per request
         self.max_retry_attempts = 3
         self.retry_delay = 2  # seconds
@@ -215,41 +220,18 @@ class YouTubeTranscriptChatbot:
         self.cache_ttl = 3600  # Cache TTL in seconds (1 hour)
         self.cache_timestamps = {}
 
-        # Connect to the retriever
-        self.retriever = self._initialize_retriever()
+        # Connect to the retriever - Removed, retriever is now injected per request
+        # self.retriever = self._initialize_retriever()
 
-        logger.info(f"Initialized {CHATBOT_NAME} with DeepSeek API")
+        logger.info(f"Initialized {CHATBOT_NAME} with DeepSeek API (Retriever/Embeddings are injected per request)")
 
-    def _initialize_retriever(self):
-        """Set up connection to Pinecone vector database"""
-        try:
-            logger.info(f"Connecting to Pinecone index: {INDEX_NAME}")
-            vector_store = PineconeVectorStore(
-                index_name=INDEX_NAME,
-                embedding=self.embeddings,
-                text_key="text" # Assuming 'text' field holds the content in Pinecone
-            )
-            # Create retriever with MMR for diverse results
-            retriever = vector_store.as_retriever(
-                search_type="mmr",
-                search_kwargs={
-                    "k": 6,         # Number of final documents to return
-                    "fetch_k": 15,  # Number of documents to fetch initially for MMR analysis
-                    "lambda_mult": 0.7 # Diversity parameter (0=max diversity, 1=max relevance)
-                }
-            )
-            logger.info(f"Successfully connected retriever to Pinecone index: {INDEX_NAME}")
-            return retriever
-        except Exception as e:
-            logger.error(f"Error initializing Pinecone retriever for index {INDEX_NAME}: {e}", exc_info=True)
-            raise RuntimeError(f"Failed to connect to vector database: {e}")
-
-    async def get_embedding(self, text: str) -> List[float]:
+    # Removed _initialize_retriever method, dependency handles this
+    async def get_embedding(self, text: str, embeddings: Embeddings) -> List[float]: # Added embeddings dependency
         """Get embedding with retry logic"""
         for attempt in range(self.max_retry_attempts):
             try:
                 # Run synchronous embedding function in a separate thread
-                return await asyncio.to_thread(self.embeddings.embed_query, text)
+                return await asyncio.to_thread(embeddings.embed_query, text) # Use injected embeddings
             except Exception as e:
                 if attempt < self.max_retry_attempts - 1:
                     wait_time = self.retry_delay * (2 ** attempt)
@@ -259,7 +241,7 @@ class YouTubeTranscriptChatbot:
                     logger.error(f"Failed to generate embedding after {self.max_retry_attempts} attempts: {e}", exc_info=True)
                     raise RuntimeError(f"Failed to generate embedding: {e}")
 
-    async def retrieve_context(self, query: str) -> List[Dict]:
+    async def retrieve_context(self, query: str, retriever: VectorStoreRetriever, embeddings: Embeddings) -> List[Dict]: # Added retriever and embeddings dependencies
         """Retrieve relevant context from vector store with caching"""
         try:
             # Check for normalized query to improve cache hits
@@ -280,7 +262,8 @@ class YouTubeTranscriptChatbot:
             if normalized_query not in self.query_embedding_cache:
                  # Generate and cache embedding if not present
                  # Run synchronous embedding in thread pool
-                 _ = await self.get_embedding(query) # We don't need the embedding itself here, just ensure it's generated
+                 # Use the injected embeddings object now
+                 _ = await self.get_embedding(query, embeddings) # Pass embeddings
                  self.query_embedding_cache[normalized_query] = True # Mark as generated
                  self.cache_timestamps[normalized_query] = current_time
                  logger.info(f"Generated and cached embedding for query: {normalized_query[:30]}...")
@@ -289,7 +272,8 @@ class YouTubeTranscriptChatbot:
 
 
             # Perform retrieval using Langchain retriever in thread pool
-            documents = await asyncio.to_thread(self.retriever.get_relevant_documents, query)
+            # Use the injected retriever object now
+            documents = await asyncio.to_thread(retriever.get_relevant_documents, query) # Use injected retriever
 
             context_docs = []
             for doc in documents:
@@ -401,7 +385,10 @@ class YouTubeTranscriptChatbot:
 
     async def get_streaming_response(self,
                                  query: str,
+                                 retriever: VectorStoreRetriever, # Added retriever dependency
+                                 embeddings: Embeddings, # Added embeddings dependency
                                  history: List[Dict[str, str]] = [], # History passed from caller
+                                 tenant_prompt_template: Optional[str] = None, # Added tenant prompt template
                                  callback: Optional[Callable[[Any], None]] = None) -> str:
         """
         Get a streaming response from DeepSeek API, incorporating chat history.
@@ -409,7 +396,7 @@ class YouTubeTranscriptChatbot:
         Returns the full, raw response content string.
         """
         # 1. Retrieve context
-        context_docs = await self.retrieve_context(query)
+        context_docs = await self.retrieve_context(query, retriever, embeddings) # Pass dependencies
         if not context_docs:
             # Handle case where no context is found - maybe a direct response?
             logger.warning(f"No context retrieved for query: {query[:50]}...")
@@ -429,18 +416,37 @@ class YouTubeTranscriptChatbot:
             for doc in optimized_context
         ])
 
-        # Load system prompt from file
+        # Determine the prompt template to use
+        prompt_template = None
+        if tenant_prompt_template and tenant_prompt_template.strip():
+            logger.info("Using tenant-specific system prompt template.")
+            prompt_template = tenant_prompt_template
+        else:
+            logger.info("Tenant prompt not set, loading default from config/system_prompt.txt.")
+            try:
+                with open("config/system_prompt.txt", "r", encoding="utf-8") as f:
+                    prompt_template = f.read()
+            except FileNotFoundError:
+                logger.error("Default system prompt file 'config/system_prompt.txt' not found. Using basic fallback.")
+                # Basic fallback if file is missing
+                prompt_template = "You are a helpful AI assistant for {CREATOR_NAME}. Answer based on the context:\nContext:\n---\n{context_text}\n---"
+
+        # Format the chosen prompt template
         try:
-            with open("config/system_prompt.txt", "r", encoding="utf-8") as f:
-                prompt_template = f.read()
+            # Attempt to format with both placeholders, tenant prompts might not have CREATOR_NAME
             system_message = prompt_template.format(CREATOR_NAME=CREATOR_NAME, context_text=context_text)
-        except FileNotFoundError:
-            logger.error("System prompt file 'config/system_prompt.txt' not found. Using default.")
-            # Fallback default prompt (consider making this more robust)
-            system_message = f"You are a helpful AI assistant for {CREATOR_NAME}. Answer based on the context:\nContext:\n---\n{context_text}\n---"
         except KeyError as e:
-             logger.error(f"Missing placeholder {e} in system prompt template. Using default.")
-             system_message = f"You are a helpful AI assistant for {CREATOR_NAME}. Answer based on the context:\nContext:\n---\n{context_text}\n---"
+            logger.warning(f"Placeholder {e} missing in the chosen prompt template. Attempting format with only context_text.")
+            try:
+                 # Fallback: Try formatting only with context_text if CREATOR_NAME caused error
+                 system_message = prompt_template.format(context_text=context_text)
+            except KeyError as e2:
+                 logger.error(f"Placeholder {e2} also missing in the chosen prompt template. Using template as is with context appended.")
+                 # Final fallback: Use the template string directly and append context separately
+                 system_message = f"{prompt_template}\n\nContext:\n---\n{context_text}\n---"
+        except Exception as format_exc:
+             logger.error(f"Unexpected error formatting prompt template: {format_exc}. Using basic fallback.")
+             system_message = f"You are a helpful AI assistant. Answer based on the context:\nContext:\n---\n{context_text}\n---"
 
         messages = [{"role": "system", "content": system_message}]
 

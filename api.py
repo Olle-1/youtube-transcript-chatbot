@@ -20,8 +20,13 @@ import secrets
 import time
 from datetime import datetime, timedelta
 
+# Import models and dependencies
+from models.db_models import Tenant # Added
+from auth.dependencies import get_current_tenant, get_tenant_retriever, get_tenant_embeddings # Added
+from langchain.vectorstores.base import VectorStoreRetriever # Added for type hint
+from langchain_core.embeddings import Embeddings # Added for type hint
+
 # Import from our chatbot implementation
-# This assumes final-integration.py is saved as youtube_chatbot.py
 from chatbot import YouTubeTranscriptChatbot
 
 # Configure logging
@@ -215,22 +220,34 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(
+    request: ChatRequest,
+    tenant: Tenant = Depends(get_current_tenant),
+    retriever: VectorStoreRetriever = Depends(get_tenant_retriever),
+    embeddings: Embeddings = Depends(get_tenant_embeddings)
+):
     """Standard chat endpoint - returns full response"""
     try:
         # Get or create session
         session_id = request.session_id or "default"
         session = get_session(session_id)
         
-        # Set chatbot history from session if it exists
-        if session["history"]:
-            chatbot.chat_history = session["history"]
-        
-        # Get response
-        response = await chatbot.get_streaming_response(request.query)
-        
-        # Update session history
-        session["history"] = chatbot.chat_history
+        # Get history from session
+        history = session.get("history", [])
+
+        # Get response using injected dependencies and tenant prompt
+        response = await chatbot.get_streaming_response(
+            query=request.query,
+            retriever=retriever,
+            embeddings=embeddings,
+            history=history,
+            tenant_prompt_template=tenant.system_prompt
+            # Callback is not needed for non-streaming endpoint
+        )
+
+        # Note: History update is removed as chatbot.py doesn't return updated history.
+        # This needs to be addressed if session persistence is required.
+        # session["history"] = updated_history # Needs updated_history from chatbot
         
         # Extract sources from response
         sources = []
@@ -262,16 +279,20 @@ async def chat(request: ChatRequest):
         )
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(
+    request: ChatRequest,
+    tenant: Tenant = Depends(get_current_tenant),
+    retriever: VectorStoreRetriever = Depends(get_tenant_retriever),
+    embeddings: Embeddings = Depends(get_tenant_embeddings)
+):
     """Streaming chat endpoint - returns chunks as they're generated"""
     try:
         # Get or create session
         session_id = request.session_id or "default"
         session = get_session(session_id)
         
-        # Set chatbot history from session if it exists
-        if session["history"]:
-            chatbot.chat_history = session["history"]
+        # Get history from session
+        history = session.get("history", [])
         
         # Create an async generator for streaming
         async def response_generator():
@@ -285,11 +306,19 @@ async def chat_stream(request: ChatRequest):
             # Create task for getting response
             async def get_response():
                 try:
-                    response = await chatbot.get_streaming_response(request.query, handle_chunk)
+                    # Pass dependencies and tenant prompt to streaming response
+                    response = await chatbot.get_streaming_response(
+                        query=request.query,
+                        retriever=retriever,
+                        embeddings=embeddings,
+                        history=history,
+                        tenant_prompt_template=tenant.system_prompt,
+                        callback=handle_chunk
+                    )
                     # Signal end of response
                     queue.put_nowait(None)
-                    # Update session history
-                    session["history"] = chatbot.chat_history
+                    # Note: History update is removed as chatbot.py doesn't return updated history.
+                    # session["history"] = updated_history # Needs updated_history from chatbot
                 except Exception as e:
                     logger.error(f"Error in streaming response: {str(e)}")
                     await queue.put("Error: " + str(e))
