@@ -35,7 +35,7 @@ import sys
 import os
 # Ensure the project root is in the path to find 'models'
 sys.path.insert(0, os.path.realpath(os.path.join(os.path.dirname(__file__), '..')))
-from models.db_models import Base, sync_db_url # Import Base and the CORRECT sync URL
+from models.db_models import Base, DATABASE_URL # Import Base and DATABASE_URL
 
 target_metadata = Base.metadata
 
@@ -78,12 +78,26 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    # Use the sync_db_url directly imported from models.db_models, which handles URL parsing
-    if not sync_db_url:
-        raise ValueError("sync_db_url could not be imported or is empty. Check models/db_models.py and environment variables.")
+    # Prioritize DATABASE_PUBLIC_URL for cross-project connections, fallback to DATABASE_URL
+    db_url = os.getenv("DATABASE_PUBLIC_URL") or os.getenv("DATABASE_URL")
+    if not db_url:
+        raise ValueError("Neither DATABASE_PUBLIC_URL nor DATABASE_URL environment variable is set or empty")
 
-    # Create engine using the imported synchronous URL
-    connectable = create_engine(sync_db_url, poolclass=pool.NullPool)
+    # Ensure the URL uses the standard synchronous prefix (postgresql://)
+    # Remove potential async prefixes like +psycopg or +asyncpg
+    sync_db_url_local = db_url.replace("+psycopg://", "://").replace("+asyncpg://", "://")
+    if "postgresql://" not in sync_db_url_local:
+         # If the base prefix is missing, add it (handles cases where only host:port might be set)
+         # This is less likely with Railway URLs but adds robustness.
+         if "://" not in sync_db_url_local:
+             sync_db_url_local = f"postgresql://{sync_db_url_local}"
+         else:
+             # If it has a different prefix, raise error or handle appropriately
+             raise ValueError(f"Unsupported database URL scheme in: {sync_db_url_local}")
+
+
+    # Create engine using the corrected synchronous URL
+    connectable = create_engine(sync_db_url_local, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
         context.configure(

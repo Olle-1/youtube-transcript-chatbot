@@ -22,27 +22,32 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
     raise ValueError("SECRET_KEY environment variable not set for encryption")
 
-# Ensure correct URL prefixes for async and sync engines
-# Assume DATABASE_URL might be 'postgresql://...' or 'postgresql+psycopg://...'
+# Ensure correct URL prefix for psycopg (v3) driver for both sync/async
 if "postgresql+psycopg://" in DATABASE_URL:
-    async_db_url = DATABASE_URL
-    sync_db_url = DATABASE_URL.replace("postgresql+psycopg://", "postgresql://")
+    db_url_for_psycopg = DATABASE_URL
 elif "postgresql://" in DATABASE_URL:
-    # Default to psycopg as the async driver if none is specified
-    async_db_url = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://")
-    sync_db_url = DATABASE_URL
+    # Add the +psycopg suffix if only postgresql:// is present
+    db_url_for_psycopg = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://")
 else:
-    # Raise an error or handle other potential URL formats if necessary
-    raise ValueError(f"Unsupported DATABASE_URL format: {DATABASE_URL}")
+    # Handle cases where the scheme might be missing entirely
+    if "://" not in DATABASE_URL:
+         db_url_for_psycopg = f"postgresql+psycopg://{DATABASE_URL}"
+    else:
+        # If it has a different, unsupported scheme
+        raise ValueError(f"Unsupported DATABASE_URL format for psycopg driver: {DATABASE_URL}")
+
+# Use the explicitly prefixed URL for both engines
+async_db_url = db_url_for_psycopg
+sync_db_url = db_url_for_psycopg # Use the same URL for sync with psycopg v3
 
 # Async Engine and Session for FastAPI endpoints
-async_engine = create_async_engine(async_db_url, echo=False)
+async_engine = create_async_engine(async_db_url, echo=False) # Use the unified URL
 AsyncSessionLocal = sessionmaker(
     bind=async_engine, class_=AsyncSession, expire_on_commit=False
 )
 
 # Sync Engine and Session for middleware, scripts, etc.
-sync_engine = create_sync_engine(sync_db_url, echo=False)
+sync_engine = create_sync_engine(sync_db_url, echo=False) # Use the unified URL
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=sync_engine)
 
 Base = declarative_base()
