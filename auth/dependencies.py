@@ -110,28 +110,31 @@ def get_pinecone_client(tenant: Tenant = Depends(get_current_tenant)) -> pinecon
     """
     if not tenant.pinecone_api_key or not tenant.pinecone_environment or not tenant.pinecone_index_name:
         # Log this error as it indicates incomplete tenant configuration
-        # logger.error(f"Tenant {tenant.id} missing Pinecone configuration.")
+        logger.error(f"Tenant {tenant.id} ({tenant.name}) missing Pinecone configuration.") # Keep as error, it's config issue
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Tenant '{tenant.name}' is missing required Pinecone configuration (API Key, Environment, or Index Name).",
         )
-
+ 
     try:
+        logger.info(f"Initializing Pinecone for tenant {tenant.id} ({tenant.name}) in env {tenant.pinecone_environment}")
         pinecone.init(
             api_key=tenant.pinecone_api_key,
             environment=tenant.pinecone_environment
         )
         # Assuming you always want to work with a specific index per tenant
+        logger.info(f"Getting Pinecone index '{tenant.pinecone_index_name}' for tenant {tenant.id}")
         index = pinecone.Index(tenant.pinecone_index_name)
         # Optional: Add a quick check to see if the index connection works
         # index.describe_index_stats()
+        logger.info(f"Successfully initialized Pinecone index '{tenant.pinecone_index_name}' for tenant {tenant.id}")
         return index
     except Exception as e:
         # Log the detailed error from Pinecone
-        # logger.error(f"Failed to initialize Pinecone for tenant {tenant.id}: {e}")
+        logger.exception(f"Failed to initialize Pinecone for tenant {tenant.id} ({tenant.name}): {e}") # Use logger.exception
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Could not connect to Pinecone for tenant '{tenant.name}'. Error: {e}",
+            detail=f"Could not connect to Pinecone for tenant '{tenant.name}'. See server logs for details.", # Generic client message
         )
 
 # --- Embedding and Retriever Dependencies ---
@@ -152,17 +155,20 @@ try:
     else:
          logger.warning("OpenAI Embeddings not initialized due to missing API key.")
 except Exception as e:
-    logger.error(f"Failed to initialize OpenAI Embeddings: {e}", exc_info=True)
+    logger.exception(f"Failed to initialize OpenAI Embeddings: {e}") # Use logger.exception
     openai_embeddings = None # Ensure it's None on error
 
 
 def get_openai_embeddings() -> OpenAIEmbeddings:
     """Dependency to provide the globally initialized OpenAI Embeddings."""
+    logger.debug("Entering get_openai_embeddings dependency")
     if openai_embeddings is None:
+        logger.error("OpenAI Embeddings requested but not available (missing key or init error).") # Log specific reason
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OpenAI Embeddings are not available due to missing API key or initialization error."
+            detail="OpenAI Embeddings are not available. Please check server configuration." # Generic client message
         )
+    logger.debug("Returning initialized OpenAI Embeddings")
     return openai_embeddings
 
 def get_retriever(
@@ -182,15 +188,16 @@ def get_retriever(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Tenant '{tenant.name}' is missing Pinecone Index Name configuration.",
         )
-
+ 
     try:
-        logger.info(f"Creating retriever for tenant '{tenant.name}' index '{tenant.pinecone_index_name}'")
+        logger.info(f"Attempting to create PineconeVectorStore for tenant '{tenant.name}' index '{tenant.pinecone_index_name}'")
         vector_store = PineconeVectorStore(
             index_name=tenant.pinecone_index_name,
             embedding=embeddings,
             # namespace=tenant.pinecone_namespace, # Optional: Add if using namespaces per tenant
             text_key="text" # Ensure this matches your Pinecone setup
         )
+        logger.info(f"PineconeVectorStore created for tenant '{tenant.name}'. Now creating retriever.")
         # Configure retriever as needed (e.g., MMR)
         retriever = vector_store.as_retriever(
             search_type="mmr",
@@ -204,8 +211,8 @@ def get_retriever(
         return retriever
     except Exception as e:
         # Log the detailed error
-        logger.error(f"Failed to create retriever for tenant {tenant.id} ({tenant.name}): {e}", exc_info=True)
+        logger.exception(f"Failed to create retriever for tenant {tenant.id} ({tenant.name}): {e}") # Use logger.exception
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Could not create vector store retriever for tenant '{tenant.name}'. Error: {e}",
+            detail=f"Could not create vector store retriever for tenant '{tenant.name}'. See server logs for details.", # Generic client message
         )

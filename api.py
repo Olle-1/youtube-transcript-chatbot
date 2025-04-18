@@ -246,6 +246,7 @@ async def chat_stream(
     embeddings: Embeddings = Depends(get_tenant_embeddings)
 ):
     """Streaming chat endpoint - returns chunks as they're generated"""
+    logger.info(f"Entering chat_stream endpoint for tenant: {tenant.id} ({tenant.name}), session: {request.session_id or 'default'}")
     try:
         # Get or create session
         session_id = request.session_id or "default"
@@ -266,6 +267,7 @@ async def chat_stream(
             # Create task for getting response
             async def get_response():
                 try:
+                    logger.info(f"Calling chatbot.get_streaming_response for tenant: {tenant.id}, session: {session_id}")
                     # Pass dependencies and tenant prompt to streaming response
                     response = await chatbot.get_streaming_response(
                         query=request.query,
@@ -280,8 +282,8 @@ async def chat_stream(
                     # Note: History update is removed as chatbot.py doesn't return updated history.
                     # session["history"] = updated_history # Needs updated_history from chatbot
                 except Exception as e:
-                    logger.error(f"Error in streaming response: {str(e)}")
-                    await queue.put("Error: " + str(e))
+                    logger.exception(f"Error during chatbot.get_streaming_response for tenant {tenant.id}, session {session_id}: {str(e)}") # Use logger.exception
+                    await queue.put("Error: An internal error occurred during streaming.") # Generic error message for client
                     queue.put_nowait(None)
             
             # Start the task
@@ -300,10 +302,10 @@ async def chat_stream(
         )
     
     except Exception as e:
-        logger.error(f"Error in streaming endpoint: {str(e)}")
+        logger.exception(f"Error setting up streaming endpoint for tenant {tenant.id}, session {request.session_id or 'default'}: {str(e)}") # Use logger.exception
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to process streaming request: {str(e)}"
+            detail=f"Failed to process streaming request: An internal error occurred." # Generic error message for client
         )
 
 @app.post("/chat/clear")
