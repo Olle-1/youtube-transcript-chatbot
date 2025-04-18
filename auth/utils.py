@@ -20,12 +20,13 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 # --- JWT Token Handling ---
-SECRET_KEY = os.getenv("SECRET_KEY")
+# SECRET_KEY is used for DB encryption (loaded in models/db_models.py)
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY") # Use dedicated key for JWT
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30 # Token validity period
 
-if not SECRET_KEY:
-    raise ValueError("SECRET_KEY environment variable not set for JWT")
+if not JWT_SECRET_KEY:
+    raise ValueError("JWT_SECRET_KEY environment variable not set for JWT")
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None, tenant_id: Optional[str] = None) -> str: # Added tenant_id parameter
     """Creates a JWT access token, optionally including a tenant ID."""
@@ -37,13 +38,13 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None, t
     to_encode.update({"exp": expire})
     if tenant_id: # Add tenant_id to the payload if provided
         to_encode.update({"tenant_id": tenant_id})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=ALGORITHM) # Use JWT_SECRET_KEY
     return encoded_jwt
 
 def decode_access_token(token: str) -> Optional[dict]:
     """Decodes a JWT access token, returning the payload if valid."""
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[ALGORITHM]) # Use JWT_SECRET_KEY
         return payload
     except JWTError:
         return None # Indicates invalid token (expired, wrong signature, etc.)
