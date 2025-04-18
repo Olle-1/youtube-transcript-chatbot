@@ -252,7 +252,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function addMessageToDisplay(role, content, sources = null) {
         const messageElement = document.createElement('div');
-        messageElement.classList.add('message', role);
+        messageElement.classList.add('message', ...role.split(' '));
         content = content.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
         messageElement.innerHTML = `<p>${content.replace(/\n/g, '<br>')}</p>`;
         messagesDiv.appendChild(messageElement);

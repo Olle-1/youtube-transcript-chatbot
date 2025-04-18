@@ -34,3 +34,6 @@ embeddings/
 # Usage tracking (Existing - preserved)
 api_usage.json
 .roomodes
+
+# Documentation / Summaries (Not needed in repo)
+*.md
