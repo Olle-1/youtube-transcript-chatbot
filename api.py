@@ -16,15 +16,21 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import secrets
+# import secrets # Removed placeholder import
 import time
 from datetime import datetime, timedelta
+from sqlalchemy.orm import Session # Added for sync db session
 
 # Import models and dependencies
-from models.db_models import Tenant # Added
-from auth.dependencies import get_current_tenant, get_tenant_retriever, get_tenant_embeddings # Added
+from models.db_models import Tenant, get_sync_db # Added get_sync_db
+from auth.dependencies import get_current_tenant, get_tenant_retriever, get_tenant_embeddings, get_current_user # Added get_current_user
+from auth.utils import create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES # Added JWT utils
+from crud.user_crud import authenticate_user # Added DB auth function
+import schemas # Added schemas import (assuming schemas.Token exists)
+from schemas import user_schemas # Import user_schemas specifically
 from langchain.vectorstores.base import VectorStoreRetriever # Added for type hint
 from langchain_core.embeddings import Embeddings # Added for type hint
+
 
 # Import from our chatbot implementation
 from chatbot import YouTubeTranscriptChatbot
@@ -81,69 +87,14 @@ class UsageReportResponse(BaseModel):
     daily_budget: float
     remaining_budget: float
 
-# Simple user model for authentication
-class User(BaseModel):
-    username: str
-    email: Optional[str] = None
-    full_name: Optional[str] = None
-    disabled: Optional[bool] = None
+# --- Placeholder Auth Removed ---
+# The User BaseModel, fake_users_db, fake_hash_password, active_tokens,
+# get_user, and the old get_current_user function were removed.
+# A new get_current_active_user dependency using JWT decoding will be needed later (Step 6).
 
-# Simple in-memory user database
-fake_users_db = {
-    "testuser": {
-        "username": "testuser",
-        "email": "test@example.com",
-        "full_name": "Test User",
-        "hashed_password": "fakehashednewpass123",
-        "disabled": False,
-    }
-}
-
-# Simple authentication
-def fake_hash_password(password: str):
-    return "fakehashed" + password
-
-# Very simple token database - in memory (not persistent)
-active_tokens = {}
-
-# Function to get user based on username
-def get_user(db, username: str):
-    if username in db:
-        user_dict = db[username]
-        return User(**user_dict)
-
-# OAuth2 password bearer scheme
+# OAuth2 password bearer scheme (still needed for dependency injection)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
-# Function to get current user from token
-def get_current_user(token: str = Depends(oauth2_scheme)):
-    if token not in active_tokens:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    token_data = active_tokens[token]
-    
-    # Check if token has expired
-    if token_data["expires"] < time.time():
-        del active_tokens[token]
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    user = get_user(fake_users_db, token_data["user"])
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    return user
 
 # Simple session store - would use a real database in production
 session_store = {}
@@ -189,34 +140,43 @@ async def root():
         "message": "YouTube Transcript Chatbot API is running"
     }
 
-# Login endpoint
-@app.post("/auth/token")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user_dict = fake_users_db.get(form_data.username)
-    if not user_dict:
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
-    
-    user = User(**user_dict)
-    
-    if user.disabled:
-        raise HTTPException(status_code=400, detail="Inactive user")
-    
-    hashed_password = fake_hash_password(form_data.password)
-    if not hashed_password == user_dict["hashed_password"]:
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
-    
-    # Generate a token
-    token = secrets.token_hex(16)
-    active_tokens[token] = {
-        "user": user.username,
-        "expires": time.time() + 86400  # 24 hours from now
-    }
-    
-    return {"access_token": token, "token_type": "bearer"}
+# Login endpoint - Refactored for DB Auth and JWT
+@app.post("/auth/token", response_model=schemas.Token) # Use Token schema
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_sync_db) # Use sync session for auth
+):
+    # Authenticate user against the database using email (form_data.username) and password
+    user = authenticate_user(db, email=form_data.username, password=form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # Note: Add check for user.is_active if you implement that field
 
-# Protected endpoint example
-@app.get("/users/me")
-async def read_users_me(current_user: User = Depends(get_current_user)):
+    # Determine tenant_id (handle case where user might not have one yet)
+    # Using "default" as fallback based on plan. Adjust if None is not allowed or needs specific handling.
+    tenant_id = user.tenant_id if user.tenant_id else "default"
+
+    # Create JWT
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, # Use email as JWT subject
+        expires_delta=access_token_expires,
+        tenant_id=tenant_id # Pass the tenant_id
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+# Protected endpoint example - Needs refactoring (Step 6)
+# The old get_current_user dependency was removed.
+# This endpoint will fail until a new dependency using JWT decoding is created.
+@app.get("/users/me", response_model=user_schemas.User) # Add response model
+async def read_users_me(current_user: user_schemas.User = Depends(get_current_user)): # Add dependency
+    """Fetches the profile of the currently authenticated user."""
+    # The dependency handles fetching the user from the DB based on the JWT
     return current_user
 
 @app.post("/chat", response_model=ChatResponse)

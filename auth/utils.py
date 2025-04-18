@@ -27,14 +27,16 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30 # Token validity period
 if not SECRET_KEY:
     raise ValueError("SECRET_KEY environment variable not set for JWT")
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """Creates a JWT access token."""
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None, tenant_id: Optional[str] = None) -> str: # Added tenant_id parameter
+    """Creates a JWT access token, optionally including a tenant ID."""
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
         expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
+    if tenant_id: # Add tenant_id to the payload if provided
+        to_encode.update({"tenant_id": tenant_id})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 

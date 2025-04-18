@@ -2,10 +2,11 @@
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import Session # Add this import
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from models.db_models import User
 from schemas.user_schemas import UserCreate
-from auth.utils import get_password_hash
+from auth.utils import get_password_hash, verify_password # Add verify_password import
 from typing import Optional, Dict, Any
 
 async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
@@ -54,3 +55,16 @@ async def update_user_profile_settings(
         await db.refresh(db_user)
         return db_user
     return None
+
+
+# --- Synchronous Authentication ---
+
+def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
+    """Authenticates a user using synchronous session."""
+    # Use synchronous query with Session
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        return None # User not found
+    if not verify_password(password, user.hashed_password):
+        return None # Incorrect password
+    return user # Authentication successful

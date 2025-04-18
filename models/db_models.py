@@ -22,19 +22,26 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
     raise ValueError("SECRET_KEY environment variable not set for encryption")
 
-# Use async engine for FastAPI - Note: EncryptedType might have issues with async,
-# but CRUD operations will likely use synchronous sessions for simplicity with middleware.
-# Let's keep the async engine for the main app but use sync sessions where needed.
+# Ensure correct URL prefixes for async and sync engines
+# Assume DATABASE_URL might be 'postgresql://...' or 'postgresql+psycopg://...'
+if "postgresql+psycopg://" in DATABASE_URL:
+    async_db_url = DATABASE_URL
+    sync_db_url = DATABASE_URL.replace("postgresql+psycopg://", "postgresql://")
+elif "postgresql://" in DATABASE_URL:
+    # Default to psycopg as the async driver if none is specified
+    async_db_url = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://")
+    sync_db_url = DATABASE_URL
+else:
+    # Raise an error or handle other potential URL formats if necessary
+    raise ValueError(f"Unsupported DATABASE_URL format: {DATABASE_URL}")
+
 # Async Engine and Session for FastAPI endpoints
-async_engine = create_async_engine(DATABASE_URL, echo=False) # Renamed for clarity
+async_engine = create_async_engine(async_db_url, echo=False)
 AsyncSessionLocal = sessionmaker(
     bind=async_engine, class_=AsyncSession, expire_on_commit=False
 )
 
 # Sync Engine and Session for middleware, scripts, etc.
-# Note: DATABASE_URL might need adjustment if it uses an async driver prefix like 'postgresql+asyncpg://'
-# For sync usage, it should be like 'postgresql://'
-sync_db_url = DATABASE_URL.replace("+asyncpg", "") # Attempt to convert if asyncpg driver is used
 sync_engine = create_sync_engine(sync_db_url, echo=False)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=sync_engine)
 
@@ -47,6 +54,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     is_superuser = Column(Boolean, default=False, nullable=False) # Added for admin check
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=True, index=True) # Link to Tenant
     profile_settings = Column(JSON, nullable=True, default={}) # Store custom user info
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
