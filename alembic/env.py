@@ -83,21 +83,17 @@ def run_migrations_online() -> None:
     if not db_url:
         raise ValueError("Neither DATABASE_PUBLIC_URL nor DATABASE_URL environment variable is set or empty")
 
-    # Ensure the URL uses the standard synchronous prefix (postgresql://)
-    # Remove potential async prefixes like +psycopg or +asyncpg
-    sync_db_url_local = db_url.replace("+psycopg://", "://").replace("+asyncpg://", "://")
-    if "postgresql://" not in sync_db_url_local:
-         # If the base prefix is missing, add it (handles cases where only host:port might be set)
-         # This is less likely with Railway URLs but adds robustness.
-         if "://" not in sync_db_url_local:
-             sync_db_url_local = f"postgresql://{sync_db_url_local}"
-         else:
-             # If it has a different prefix, raise error or handle appropriately
-             raise ValueError(f"Unsupported database URL scheme in: {sync_db_url_local}")
+    # Use the URL directly from environment variables.
+    # Railway provides the correct 'postgresql+psycopg://' prefix.
+    # Do NOT modify the URL here.
+    if not db_url.startswith("postgresql+psycopg://"):
+        # Add a check/warning if the URL doesn't have the expected prefix,
+        # but still try to use it.
+        print(f"WARNING: DATABASE_URL does not start with 'postgresql+psycopg://'. Alembic might fail if psycopg v3 is required but the URL format is incorrect: {db_url}")
+        # Depending on strictness, you might raise ValueError here instead.
 
-
-    # Create engine using the corrected synchronous URL
-    connectable = create_engine(sync_db_url_local, poolclass=pool.NullPool)
+    # Create engine using the URL directly from environment variables
+    connectable = create_engine(db_url, poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
         context.configure(
