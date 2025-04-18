@@ -259,9 +259,15 @@ async def login_for_access_token(
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # Fetch tenant_id from the authenticated user object
+    # Use a fallback if necessary, although users should have one now
+    tenant_id = user.tenant_id if user.tenant_id else "unknown_tenant" # Or raise error if None is unexpected
+
     access_token_expires = timedelta(minutes=auth_utils.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = auth_utils.create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+        data={"sub": user.email},
+        expires_delta=access_token_expires,
+        tenant_id=tenant_id # Pass the tenant_id to include it in the JWT payload
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
